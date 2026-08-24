@@ -476,3 +476,46 @@ export interface UnifiedAlert {
   county: string;
   pub_time: string;
 }
+
+// ============================================================
+// 本地天气数据模型（从 App.tsx 抽出，供 UI 层使用）
+// ============================================================
+
+export interface WeatherCurrent {
+  temperature: number;
+  phrase: string;
+  temperatureHeatIndex: number;
+  relativeHumidity: number;
+  windSpeed: number;
+  windDirectionCardinal: string;
+  windDirectionDegrees: number;
+  uvIndex: number;
+  pressure: number;
+  pressTendencyCode: number;
+  visibility: number;
+  sunrise: string;
+  sunset: string;
+  obsQualifierPhrase: string;
+  obsTimeLocal?: string;
+  observationTime?: string;
+}
+
+export interface WeatherDay {
+  date: string;
+  dayOfWeek: string;
+  calendarDayTemperatureMax: number;
+  calendarDayTemperatureMin: number;
+  narrative: string;
+}
+
+export interface WeatherYesterday {
+  date: string;
+  dayOfWeek: string;
+  tempMax: number;
+  tempMin: number;
+  textDay: string;
+  windDir: string;
+  windScale: string;
+  windSpeed: string;
+  humidity: number;
+}

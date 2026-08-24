@@ -11,99 +11,17 @@ import { fetchJiShu } from './api/jiShu';
 import { fetchUApiPro } from './api/uApiPro';
 import { fetchApiHezi } from './api/apiHezi';
 import { type ForecastSource } from './api/unifiedWeather';
-import type { JiShuData, UApiResponse, ApiHeziResponse, UnifiedAlert } from './types/weather';
+import type { JiShuData, UApiResponse, ApiHeziResponse, UnifiedAlert, WeatherCurrent, WeatherDay, WeatherYesterday } from './types/weather';
+import type { Position, AddressInfo, LocationMode, GeocodeEngine } from './types/location';
+import { base64urlDecode, windDirToCardinal, windSpeedKmHToLevel } from './lib/weatherUtils';
+import { fetchWeatherCom } from './api/weatherCom';
+import { getLocationId, fetchQw } from './api/qweather';
 import './App.css';
 
-interface Position {
-  lat: number;
-  lng: number;
-  accuracy?: number;
-}
-
-interface AddressInfo {
-  province: string;
-  city: string;
-  district: string;
-  full: string;
-  poi: string;
-  poiDetail: string;
-}
-
-type LocationMode = 'gps' | 'auto';
-type GeocodeEngine = 'tianditu' | 'nominatim';
 
 const TIANDITU_KEY = (import.meta as any).env?.VITE_TIANDITU_KEY || '';
 
-export interface WeatherCurrent {
-  temperature: number;
-  phrase: string;
-  temperatureHeatIndex: number;
-  relativeHumidity: number;
-  windSpeed: number;
-  windDirectionCardinal: string;
-  windDirectionDegrees: number;
-  uvIndex: number;
-  pressure: number;
-  pressTendencyCode: number;
-  visibility: number;
-  sunrise: string;
-  sunset: string;
-  obsQualifierPhrase: string;
-  obsTimeLocal?: string;
-  observationTime?: string;
-}
 
-interface WeatherDay {
-  date: string;
-  dayOfWeek: string;
-  calendarDayTemperatureMax: number;
-  calendarDayTemperatureMin: number;
-  narrative: string;
-}
-
-export interface WeatherYesterday {
-  date: string;
-  dayOfWeek: string;
-  tempMax: number;
-  tempMin: number;
-  textDay: string;
-  windDir: string;
-  windScale: string;
-  windSpeed: string;
-  humidity: number;
-}
-
-function base64urlDecode(s: string): string {
-  // base64url → base64：替换 - _ 并补全 =
-  let b64 = s.replace(/-/g, '+').replace(/_/g, '/');
-  while (b64.length % 4) b64 += '=';
-  return atob(b64);
-}
-function windDirToCardinal(dir: string): string {
-  const d = dir.trim();
-  if (d.length === 0) return '';
-  // QWeather 返回中文风向（可能带"风"字），提取方位词
-  const m = d.match(/(东北|东南|西南|西北|北|东|南|西)/);
-  if (m) return m[1];
-  // 数字角度转风向
-  const deg = parseInt(d, 10);
-  if (isNaN(deg)) return d;
-  const dirs = ['北', '东北', '东', '东南', '南', '西南', '西', '西北'];
-  return dirs[Math.round(deg / 45) % 8];
-}
-
-function windSpeedKmHToLevel(speed: number): string {
-  // 风速 km/h → 风级（蒲福风级标准）
-  if (speed < 1.6) return '0级';
-  if (speed < 3.4) return '1级';
-  if (speed < 5.5) return '2级';
-  if (speed < 8.0) return '3级';
-  if (speed < 10.8) return '4级';
-  if (speed < 13.9) return '5级';
-  if (speed < 17.2) return '6级';
-  if (speed < 20.8) return '7级';
-  return '8级以上';
-}
 
 // 1 个箭头环绕成一圈：弧线 + 箭头头在弧线末端
 // 根据进度动态生成 SVG 弧线路径
@@ -514,104 +432,6 @@ function App() {
       }
     } catch (_) { /* ignore */ }
   }, []);
-
-// --- Weather.com API (当前天气 + 7天预报) ---
-const WC_API_KEY = '6532d6454b8aa370768e63d6ba5a832e';
-const WC_BASE = 'https://api.weather.com/v3/wx';
-
-async function fetchWeatherCom(endpoint: string, lat: number, lng: number): Promise<Record<string, unknown>> {
-  const url = `${WC_BASE}/${endpoint}?geocode=${lat},${lng}&format=json&units=m&language=zh-CN&apiKey=${WC_API_KEY}`;
-  const resp = await Promise.race([
-    fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }).then(async r => {
-      if (!r.ok) {
-        const body = await r.text();
-        throw new Error(`weather.com HTTP ${r.status}: ${body.slice(0, 200)}`);
-      }
-      return r.json();
-    }),
-    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('weather.com fetch 超时 (10s)')), 10000)),
-  ]);
-  return resp as Record<string, unknown>;
-}
-
-// --- QWeather JS fetch (仅历史天气) ---
-const QW_BASE = 'https://mc57rkjak5.re.qweatherapi.com/v7';
-const QW_GEO_BASE = 'https://mc57rkjak5.re.qweatherapi.com/geo';
-
-// 缓存 LocationID（localStorage，按整数经纬度粗粒度区分区级）
-let locationIdCacheData: { key: string; id: string; lat: number; lng: number } | null = null;
-
-async function getLocationId(lat: number, lng: number, jwt?: string): Promise<string> {
-  // 粗粒度坐标（整数度，约区级），区级不变则不重新请求
-  const key = `${Math.round(lat)},${Math.round(lng)}`;
-
-  // 内存缓存
-  if (locationIdCacheData && locationIdCacheData.key === key) return locationIdCacheData.id;
-
-  // 持久缓存（localStorage）
-  try {
-    const cached = localStorage.getItem(`geo_${key}`);
-    if (cached) {
-      locationIdCacheData = { key, id: cached, lat, lng };
-      return cached;
-    }
-  } catch (_) { /* ignore */ }
-
-  const token = jwt ?? ((await tauriInvoke('generate_jwt')) as string);
-  const url = `${QW_GEO_BASE}/v2/city/lookup?location=${lng.toFixed(2)},${lat.toFixed(2)}`;
-
-  const resp = await Promise.race([
-    fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Authorization': `Bearer ${token}` },
-    }).then(async r => {
-      if (!r.ok) { const body = await r.text(); throw new Error(`GeoAPI HTTP ${r.status}: ${body.slice(0, 200)}`); }
-      return r.json();
-    }),
-    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('GeoAPI 超时 (10s)')), 10000)),
-  ]);
-
-  const data = resp as Record<string, unknown>;
-  if (data.code !== '200') throw new Error(`GeoAPI: ${data.code} ${data.msg}`);
-  if (!data.location || !(data.location as any[]).length) throw new Error('GeoAPI: 未找到位置信息');
-  const id = (data.location as any[])[0].id as string;
-  locationIdCacheData = { key, id, lat, lng };
-  try { localStorage.setItem(`geo_${key}`, id); } catch (_) { /* ignore */ }
-  return id;
-}
-
-async function fetchQw(path: string, location: string, extra: string, jwt?: string): Promise<Record<string, unknown>> {
-  const token = jwt ?? ((await tauriInvoke('generate_jwt')) as string);
-
-  const params = new URLSearchParams();
-  if (extra) {
-    for (const pair of extra.split('&')) {
-      const idx = pair.indexOf('=');
-      if (idx > 0) params.append(pair.slice(0, idx), pair.slice(idx + 1));
-      else params.append(pair, '');
-    }
-  }
-  const url = `${QW_BASE}/${path}?location=${encodeURIComponent(location)}&${params.toString()}`;
-
-  const resp = await Promise.race([
-    fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0',
-        'Authorization': `Bearer ${token}`,
-      },
-    }).then(async r => {
-      if (!r.ok) {
-        const body = await r.text();
-        throw new Error(`HTTP ${r.status}: ${body.slice(0, 200)}`);
-      }
-      return r.json();
-    }),
-    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('fetch 超时 (10s)')), 10000)),
-  ]);
-
-  const data = resp as Record<string, unknown>;
-  if (data.code !== '200') throw new Error(`QWeather ${path}: ${data.code} ${data.msg}`);
-  return data;
-}
 
   // 天地图地理编码结果缓存（city + county + town）
   const geocodeCache = useRef<{ city: string; county: string; town: string; lat: number; lng: number } | null>(null);

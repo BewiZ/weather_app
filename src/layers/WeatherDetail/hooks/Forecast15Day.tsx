@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState, useEffect, useLayoutEffect } from 'react';
 import type { JiShuData, UApiResponse } from '../../../types/weather';
-import type { WeatherYesterday } from '../../../App';
+import type { WeatherYesterday } from '../../../types/weather';
 import { buildDayCards, type ForecastSource, type UnifiedDayCard } from '../../../api/unifiedWeather';
 import { SourceSwitcher } from './SourceSwitcher';
 

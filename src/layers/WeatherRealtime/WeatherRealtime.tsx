@@ -1,6 +1,6 @@
 import { forwardRef } from 'react';
 import { WeatherMetrics } from './hooks/WeatherMetrics';
-import type { WeatherCurrent } from '../../App';
+import type { WeatherCurrent } from '../../types/weather';
 
 export interface WeatherRealtimeProps {
   current: WeatherCurrent;
