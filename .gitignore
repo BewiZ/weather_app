@@ -1,0 +1,37 @@
+# Secrets
+.env.local
+.env
+*.env
+
+# Android signing keys & signatures (NEVER commit)
+*.jks
+*.keystore
+*.idsig
+*.pk8
+*.pem
+
+# Build outputs
+dist/
+node_modules/
+src-tauri/target/
+src-tauri/gen/android/app/build/
+
+# APK binaries (build artifacts, not source)
+*.apk
+
+# OS files
+.DS_Store
+Thumbs.db
+*.log
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Windows reserved / corrupt filenames
+nul
+
+# Source icon (large asset, optional to track)
+# icon_source.png
