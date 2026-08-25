@@ -96,11 +96,39 @@ async fn ping_test() -> Result<String, String> {
     Ok("pong: v3.1 JS-fetch".to_string())
 }
 
+/// 从 Rust 侧拉取 URL（绕过 Android WebView CORS）
+/// JS 负责构造完整 URL，Rust 只负责发 HTTP 请求并返回 JSON
+#[tauri::command]
+async fn fetch_msn_weather(url: String) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("reqwest build: {}", e))?;
+
+    let resp = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("MSN fetch: {}", e))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let txt = resp.text().await.unwrap_or_default();
+        return Err(format!("MSN HTTP {}: {}", status, txt.chars().take(200).collect::<String>()));
+    }
+
+    let text = resp.text().await.map_err(|e| format!("MSN text: {}", e))?;
+    let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("MSN json: {}", e))?;
+    Ok(json)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![ping_test, generate_jwt])
+        .invoke_handler(tauri::generate_handler![ping_test, generate_jwt, fetch_msn_weather])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
