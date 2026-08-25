@@ -10,7 +10,7 @@ import { WeatherDetail } from './layers/WeatherDetail/WeatherDetail';
 import { fetchJiShu } from './api/jiShu';
 import { fetchUApiPro } from './api/uApiPro';
 import { fetchApiHezi } from './api/apiHezi';
-import { type ForecastSource } from './api/unifiedWeather';
+import { type ForecastSource, skyconToPhrase } from './api/unifiedWeather';
 import type { JiShuData, UApiResponse, ApiHeziResponse, UnifiedAlert, WeatherCurrent, WeatherDay, WeatherYesterday } from './types/weather';
 import type { Position, AddressInfo, LocationMode, GeocodeEngine } from './types/location';
 import { base64urlDecode, windDirToCardinal, windSpeedKmHToLevel } from './lib/weatherUtils';
@@ -494,7 +494,76 @@ function App() {
         }
         setWeatherDays(days);
       } else {
-        // weather.com 已禁用：保留缓存数据，跳过请求
+        // weather.com 已禁用：从极数本源获取实况 + 今天最高/最低
+        if (apiEnabled.jishu) {
+          try {
+            const jiShu = await fetchJiShu(lat, lng, 15, 24);
+            if (jiShu) {
+              setJishuData(jiShu);
+              rawJiShu.current = jiShu;
+              setApiRequestTimes(prev => ({ ...prev, jishu: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }));
+
+              const jiShuAny = jiShu as any;
+              const rt = jiShuAny.realtime || {};
+              const sm = jiShuAny.summary || {};
+              const dly = jiShuAny.daily || {};
+
+              const humidity = typeof rt.humidity === 'number' ? Math.round(rt.humidity * 100) : (typeof sm.humidity_percent === 'number' ? sm.humidity_percent : 0);
+              const phrase = sm.skycon_code ? skyconToPhrase(sm.skycon_code) : (sm.skycon || '未知');
+              const temperature = typeof rt.temperature === 'number' ? rt.temperature : (typeof sm.temperature === 'number' ? sm.temperature : 0);
+              const apparent = typeof rt.apparent_temperature === 'number' ? rt.apparent_temperature : (typeof sm.apparent_temperature === 'number' ? sm.apparent_temperature : 0);
+              const windDeg = typeof rt.wind?.direction === 'number' ? rt.wind.direction : (typeof sm.wind?.direction_deg === 'number' ? sm.wind.direction_deg : 0);
+              const windSpeed = typeof rt.wind?.speed === 'number' ? rt.wind.speed : (typeof sm.wind?.speed_ms === 'number' ? sm.wind.speed_ms : 0);
+              const pressureHpa = typeof rt.pressure === 'number' ? Math.round(rt.pressure / 100) : 0;
+              const uv = typeof rt.life_index?.ultraviolet?.index === 'number' ? rt.life_index.ultraviolet.index : 0;
+              const vis = typeof rt.visibility === 'number' ? rt.visibility : (typeof sm.visibility_km === 'number' ? sm.visibility_km : 0);
+
+              // 日出/日落
+              let sunrise = '';
+              let sunset = '';
+              if (dly.astro && dly.astro.length > 0) {
+                sunrise = dly.astro[0].sunrise?.time || '';
+                sunset = dly.astro[0].sunset?.time || '';
+              }
+
+              setWeatherCurrent({
+                temperature,
+                phrase,
+                temperatureHeatIndex: apparent,
+                relativeHumidity: humidity,
+                windSpeed,
+                windDirectionCardinal: sm.wind?.direction_text || windDirToCardinal(windDeg),
+                windDirectionDegrees: windDeg,
+                uvIndex: uv,
+                pressure: pressureHpa,
+                pressTendencyCode: 0,
+                visibility: vis,
+                sunrise,
+                sunset,
+                obsQualifierPhrase: '',
+                obsTimeLocal: jiShu.server_time || '',
+                observationTime: jiShu.server_time || '',
+              });
+
+              // 今天最高/最低
+              if (dly.temperature && dly.temperature.length > 0) {
+                const today = dly.temperature[0];
+                const dateStr = today.date || new Date().toISOString().slice(0, 10);
+                setWeatherDays([{
+                  date: dateStr,
+                  dayOfWeek: wkMap[new Date(dateStr).getDay()] || '',
+                  calendarDayTemperatureMax: Number(today.max) || 0,
+                  calendarDayTemperatureMin: Number(today.min) || 0,
+                  narrative: phrase,
+                }]);
+              } else {
+                setWeatherDays([]);
+              }
+            }
+          } catch (e) {
+            console.warn('[jiShu realtime fallback]', (e as Error).message);
+          }
+        }
       }
 
       // 昨日天气（本地缓存，每天只请求一次）
@@ -1498,7 +1567,7 @@ function App() {
               current={weatherCurrent}
               todayMax={Math.round(weatherDays[0]?.calendarDayTemperatureMax || weatherCurrent.temperature)}
               todayMin={Math.round(weatherDays[0]?.calendarDayTemperatureMin || 0)}
-              isDisabled={!apiEnabled.weather_com}
+              isDisabled={!apiEnabled.weather_com && !apiEnabled.jishu}
             />
 
             <WeatherDetail
