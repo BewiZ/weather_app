@@ -1738,23 +1738,28 @@ body,
   justify-content: flex-start;
 }
 
-/* 紧凑：缩短 六项指标 → 24h → 15日 的卡片间隔 */
-/* 注：realtime↔24h 的实际间隙由 .card-realtime.margin-bottom(6px) + .forecast-24h.margin-top(0.4rem) 组成，
-   与 App.tsx 中 COMPACT_GAP 常量配套（下拉差速视差据此闭合间隙） */
+/* 紧凑：统一卡片间隔 —— 每段间隙只由一个值构成，全部等于 --card-gap
+   （原先 6px + 0.4rem 混合，导致 realtime→24h 12.4px、24h→15日 6.4px、15日→指数 6.4px 不一致） */
+.weather-content.compact {
+  --card-gap: 0.4rem;
+}
 .weather-content.compact .card-realtime {
-  margin-bottom: 6px;
+  margin-top: 0;
+  margin-bottom: var(--card-gap);
 }
+.weather-content.compact .card-forecast,
 .weather-content.compact .forecast-24h {
-  margin-top: 0.4rem;
-}
-.weather-content.compact .card-15day {
   margin-top: 0;
 }
+.weather-content.compact .card-15day {
+  margin-top: var(--card-gap);
+  margin-bottom: 0;
+}
 .weather-content.compact .forecast-15day {
-  margin-top: 0.4rem;
+  margin-top: 0;
 }
 .weather-content.compact .card-extra {
-  margin-top: 0.4rem;
+  margin-top: var(--card-gap);
 }
 
 .card-realtime {
@@ -1826,73 +1831,93 @@ body,
   color: var(--text-dim);
 }
 
-/* 两个 AQI 读数 */
-.aq-aqi {
+/* 圆环 + 污染物网格 */
+.aq-body {
   display: flex;
-  gap: 0.5rem;
+  align-items: center;
+  gap: 0.7rem;
 }
 
-.aq-aqi-item {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
-  padding: 0.4rem 0.55rem;
-  background: rgba(30, 41, 59, 0.7);
-  border: 1px solid var(--card-border);
-  border-radius: 9px;
+.aq-ring {
+  position: relative;
+  flex: 0 0 auto;
+  width: 70px;
+  height: 70px;
 }
 
-.aq-aqi-num {
-  font-size: 1.35rem;
+.aq-ring svg {
+  display: block;
+  width: 70px;
+  height: 70px;
+}
+
+.aq-ring-track,
+.aq-ring-arc {
+  fill: none;
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+
+.aq-ring-track {
+  stroke: rgba(148, 163, 184, 0.22);
+}
+
+.aq-ring-arc {
+  transition: stroke-dashoffset 0.6s ease, stroke 0.4s ease;
+}
+
+/* AQI 数值 + 等级名，居于环心 */
+.aq-ring-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  line-height: 1.05;
+}
+
+.aq-ring-val {
+  font-size: 1.05rem;
   font-weight: 700;
-  line-height: 1.1;
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 
-.aq-aqi-meta {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.aq-aqi-meta span {
-  font-size: 0.62rem;
-  line-height: 1.3;
+.aq-ring-label {
+  font-size: 0.5rem;
+  letter-spacing: 0.02em;
   color: var(--text-dim);
 }
 
-.aq-aqi-meta span:last-child {
-  color: var(--text-muted);
-}
-
-/* 六项污染物：自动换行的简单列表 */
+/* 六项污染物：3 列 × 2 行，标签在上、数值在下 */
 .aq-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem 0.5rem;
-  margin-top: 0.5rem;
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.32rem;
 }
 
 .aq-item {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.3rem;
-  padding: 0.22rem 0.55rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.06rem;
+  padding: 0.2rem 0.12rem;
   background: rgba(30, 41, 59, 0.7);
   border: 1px solid var(--card-border);
-  border-radius: 999px;
+  border-radius: 8px;
 }
 
 .aq-item-label {
-  font-size: 0.68rem;
+  font-size: 0.6rem;
   color: var(--text-dim);
 }
 
 .aq-item-val {
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 600;
   color: var(--text);
   font-variant-numeric: tabular-nums;

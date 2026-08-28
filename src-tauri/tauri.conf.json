@@ -18,7 +18,10 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "devCsp": {
+        "connect-src": ["'self'", "https://assets.msn.cn/"]
+      }
     }
   },
   "bundle": {

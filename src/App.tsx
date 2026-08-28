@@ -1091,9 +1091,9 @@ function App() {
 
   // 差速视差常量：lag + boost 需恰好等于 realtime↔forecast 的卡片间隙，才能把间隙完全闭合
   // LOOSE_GAP = .card-realtime 在 loose 下的 margin-bottom (24px)
-  // COMPACT_GAP = compact 下 .card-realtime margin-bottom (6px) + .forecast-24h margin-top (0.4rem ≈ 5px)
+  // COMPACT_GAP = compact 下 .weather-content.compact 的 --card-gap (8px)，与 App.css 保持同步
   const LOOSE_GAP = 24;
-  const COMPACT_GAP = 11;
+  const COMPACT_GAP = 8;
   const STAGE_END = 24;    // 差速阶段结束 sy，gap 闭合后 lag/boost 固定
   const LOOSE_STAGE = STAGE_END;
   const BLUR_MAX = 4;      // 实况天气最大模糊半径

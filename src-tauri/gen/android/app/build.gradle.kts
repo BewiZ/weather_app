@@ -6,6 +6,16 @@ plugins {
     id("rust")
 }
 
+// Register the frontend dist/ as an additional asset source directory
+// so it gets merged into the APK alongside tauri.conf.json
+android {
+    sourceSets {
+        getByName("main") {
+            assets.srcDirs(listOf(file("../../../../dist").absolutePath))
+        }
+    }
+}
+
 val tauriProperties = Properties().apply {
     val propFile = file("tauri.properties")
     if (propFile.exists()) {

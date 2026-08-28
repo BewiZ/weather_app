@@ -1,10 +1,13 @@
 package com.zzz.locate
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
@@ -40,15 +43,70 @@ class MainActivity : TauriActivity() {
             }
         }
 
+    // 后台定位权限请求（Android 10+，需先授予前台定位权限）
+    private val bgLocationLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                requestIgnoreBatteryOptimization()
+                startTracking()
+            } else {
+                // 仅无后台定位权限时，GPS 在切后台时会暂停，非致命
+                Log.w(TAG, "Background location denied, GPS may pause in background")
+                startTracking()
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         fusedClient = LocationServices.getFusedLocationProviderClient(this)
+
+        // 记录 WebView 版本信息
+        try {
+            val webViewPkg = android.webkit.WebView.getCurrentWebViewPackage()
+            Log.d(TAG, "WebView package: ${webViewPkg?.packageName}, version: ${webViewPkg?.versionName}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get WebView package info: ${e.message}", e)
+        }
+        Log.d(TAG, "onCreate complete")
     }
 
     override fun onWebViewCreate(webView: WebView) {
         super.onWebViewCreate(webView)
         mWebView = webView
+        // 启用 WebView 远程调试：可通过 chrome://inspect + adb forward 检查 DOM/网络/控制台
+        WebView.setWebContentsDebuggingEnabled(true)
+        Log.d(TAG, "onWebViewCreate called, webView=$webView, url=${webView.url}, parent=${webView.parent}")
+
+        // 华为 WebView 兜底：延迟检查
+        // 1) 如果 WebView 未挂载到窗口（setContentView 被跳过）→ 手动 setContentView
+        // 2) 如果 WebView.url 仍为空 → 手动加载首页
+        webView.postDelayed({
+            try {
+                val attached = webView.parent != null
+                Log.d(TAG, "delayed check: url=${webView.url}, parent=${webView.parent}, attached=$attached, w=${webView.width}, h=${webView.height}")
+
+                if (!attached) {
+                    // Rust 代码可能因异常跳过了 setContentView —— 手动挂载
+                    Log.w(TAG, "WebView not attached to window, manually calling setContentView")
+                    setContentView(webView)
+                }
+
+                if (webView.url == null || webView.url == "about:blank") {
+                    Log.w(TAG, "WebView.url is still null/blank, reloading tauri.localhost")
+                    webView.loadUrl("http://tauri.localhost/")
+                } else if (!attached) {
+                    // 刚挂载，需要重新加载让内容显示
+                    val u = webView.url ?: "http://tauri.localhost/"
+                    Log.w(TAG, "WebView was just attached, reloading $u")
+                    webView.loadUrl(u)
+                } else {
+                    Log.d(TAG, "WebView already loaded: ${webView.url}")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Fallback setup failed: ${e.message}", e)
+            }
+        }, 3000L)
 
         webView.addJavascriptInterface(object {
             @JavascriptInterface
@@ -86,9 +144,10 @@ class MainActivity : TauriActivity() {
         injectBridge()
     }
 
+    // 允许软件后台运行：不暂停 GPS 追踪和 Webview 定时器，
+    // 只在 onDestroy 时彻底清理
     override fun onPause() {
         super.onPause()
-        stopTracking()
     }
 
     override fun onDestroy() {
@@ -102,14 +161,50 @@ class MainActivity : TauriActivity() {
             this, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
 
+    private fun hasBackgroundLocationPermission(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return ContextCompat.checkSelfPermission(
+                this, Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+        return true // Q 以下不需要
+    }
+
     private fun requestAndStartGps() {
         if (hasLocationPermission()) {
+            // 后台定位权限（Android 10+）
+            if (!hasBackgroundLocationPermission()) {
+                bgLocationLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                return
+            }
+            // 提示忽略电池优化（让用户在系统弹窗中主动确认，让后台 GPS 和 API 定时器更稳定）
+            requestIgnoreBatteryOptimization()
             startTracking()
         } else {
             locationLauncher.launch(arrayOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,
                 Manifest.permission.ACCESS_COARSE_LOCATION
             ))
+        }
+    }
+
+    private fun requestIgnoreBatteryOptimization() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val isIgnoring = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    (getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager).isIgnoringBatteryOptimizations(packageName)
+                } else {
+                    false
+                }
+                if (!isIgnoring) {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = android.net.Uri.parse("package:$packageName")
+                    }
+                    startActivityForResult(intent, 9001)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Cannot request battery optimization ignore", e)
+            }
         }
     }
 
