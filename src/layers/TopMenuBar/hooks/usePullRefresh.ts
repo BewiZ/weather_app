@@ -309,6 +309,22 @@ export function usePullRefresh({
 }: UsePullRefreshProps): UsePullRefreshReturn {
   // 上一帧触摸 Y（用于计算 dy）
   const lastY = useRef<number>(0);
+  // 用 RAF 批处理 updateLoader：handleTouchMove 在 120Hz 下每秒可触发上百次，
+  // 每次 updateLoader 写入 ~10 个 DOM 属性（SVG 弧、箭头、颜色、透明度、class），
+  // 同步执行会触发多次重排。RAF 批处理保证每帧最多一次，显著降低掉帧。
+  const pendingLoader = useRef<{ progress: number; showDebug: boolean } | null>(null);
+  const loaderRAF = useRef<number>(0);
+  function scheduleLoaderUpdate(progress: number, showDebug: boolean) {
+    if (loaderRAF.current) return;
+    pendingLoader.current = { progress, showDebug };
+    loaderRAF.current = requestAnimationFrame(() => {
+      loaderRAF.current = 0;
+      if (pendingLoader.current) {
+        updateLoader(pendingLoader.current.progress, domRef.current ?? ({} as LoaderDOM), pendingLoader.current.showDebug);
+        pendingLoader.current = null;
+      }
+    });
+  }
   // 下拉进度浮动调试元素的位置 & 拖动起点
   const debugPos = useRef({ x: 16, y: 60 });
   const debugDragStart = useRef<DragStart>({ x: 0, y: 0 });
@@ -392,7 +408,6 @@ export function usePullRefresh({
     (e: React.TouchEvent) => {
       if (isRefreshing) return;
 
-      e.preventDefault();
       const y = e.touches[0].clientY;
       const dy = y - lastY.current;
       lastY.current = y;
@@ -441,7 +456,7 @@ export function usePullRefresh({
       }
 
       const progress = Math.min(P_TRIGGER, contentOffsetRef.current / TOTAL_DRAG);
-      updateLoader(progress, domRef.current ?? ({} as LoaderDOM), showPullDebug);
+      scheduleLoaderUpdate(progress, showPullDebug);
     },
     [domRef, showPullDebug, isRefreshing, contentOffsetRef, pageScrollYRef, applyScroll],
   );

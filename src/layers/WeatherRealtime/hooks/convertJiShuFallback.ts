@@ -42,7 +42,13 @@ export function buildWeatherCurrentFromJiShu(
       ? rt.temperature
       : typeof sm.temperature === 'number'
       ? sm.temperature
-      : 0;
+      : null;
+
+  // 实况温度缺失 = 数据无效，返回 null 触发下一个数据源
+  if (temperature === null) {
+    console.warn('[JiShu] realtime temperature missing, data invalid');
+    return null;
+  }
 
   const apparent =
     typeof rt.apparent_temperature === 'number'
@@ -81,6 +87,20 @@ export function buildWeatherCurrentFromJiShu(
     sunset = dly.astro[0].sunset?.time || '';
   }
 
+  // 云量：优先 summary.cloudrate_percent（0-100），兜底 realtime.cloudrate（0-1）
+  const cloudCover =
+    typeof sm.cloudrate_percent === 'number'
+      ? sm.cloudrate_percent
+      : typeof rt.cloudrate === 'number'
+      ? Math.round(rt.cloudrate * 100)
+      : undefined;
+
+  // 云况：优先 realtime.skycon，兜底 summary.skycon_code
+  const sky =
+    typeof rt.skycon === 'string' ? rt.skycon
+      : typeof sm.skycon_code === 'string' ? sm.skycon_code
+      : undefined;
+
   const current: WeatherCurrent = {
     temperature,
     phrase,
@@ -98,6 +118,8 @@ export function buildWeatherCurrentFromJiShu(
     obsQualifierPhrase: '',
     obsTimeLocal: jiShu.server_time || '',
     observationTime: jiShu.server_time || '',
+    cloudCover,
+    sky,
   };
 
   // 今天最高/最低

@@ -4,6 +4,8 @@ import type { JiShuData, UApiResponse } from '../../types/weather';
 import type { Forecast24Style } from './hooks/Forecast24Hour';
 import { Forecast24Hour } from './hooks/Forecast24Hour';
 import { Forecast15Day } from './hooks/Forecast15Day';
+import { AirQualityList } from './hooks/AirQualityList';
+import { LifeIndices } from './hooks/LifeIndices';
 
 export interface WeatherDetailProps {
   jishuData: JiShuData | null;
@@ -63,6 +65,13 @@ export function WeatherDetail({
           isDisabled={is15Disabled}
         />
       </div>
+      {/* 15 日预报下方：空气质量（极数本源）+ 18 项生活指数（UApiPro） */}
+      {(jishuData?.realtime?.air_quality || uapiData?.life_indices) && (
+        <div className="card-extra">
+          <AirQualityList jishuData={jishuData} />
+          <LifeIndices uapiData={uapiData} />
+        </div>
+      )}
     </>
   );
 }

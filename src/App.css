@@ -899,6 +899,174 @@ body,
 }
 
 /* ============================================================
+   中央气象台气象预警条（CMA map alarm）
+   置于「最高/最低温度」与「六项指标」之间，仅存在预警时渲染
+   收起态：固定高度圆角矩形，每 2.5s 上滚一条循环展示；点击展开完整内容
+   ============================================================ */
+
+.cma-warning {
+  margin-top: 8px;
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.cma-warning-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 视口：固定高度 + 裁剪，每条预警占其 100%，上滚由 track 的 translateY 驱动 */
+.cma-warning-viewport {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  overflow: hidden;
+}
+
+.cma-warning-track {
+  transition: transform 0.5s ease;
+}
+
+.cma-warning-slide {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 100%;
+}
+
+.cma-warning-icon {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  object-fit: contain;
+}
+
+/* SVG 缺失时的 emoji 兜底 */
+.cma-warning-emoji {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+
+.cma-warning-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.82rem;
+  line-height: 1.3;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cma-warning-count {
+  flex: 0 0 auto;
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.cma-warning-hint {
+  flex: 0 0 auto;
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+/* 展开态：标题栏 + 各条预警的完整内容 */
+.cma-warning-expanded {
+  display: flex;
+  flex-direction: column;
+}
+
+.cma-warning-expand-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--card-border);
+}
+
+.cma-warning-expand-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cma-warning-collapse {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.cma-warning-item {
+  display: flex;
+  gap: 10px;
+  padding: 9px 10px;
+}
+
+.cma-warning-item + .cma-warning-item {
+  border-top: 1px solid var(--card-border);
+}
+
+.cma-warning-item-icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  object-fit: contain;
+}
+
+.cma-warning-item-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.cma-warning-item-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.cma-warning-desc {
+  margin-top: 6px;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
+/* description 与发布时间之间的空行 */
+.cma-warning-gap {
+  height: 0.7em;
+}
+
+.cma-warning-pub {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
    实况详情六项指标卡片（风速/湿度/气压/能见度/紫外线/日出日落）
    三三一组两行，附属在实况天气卡片内
    ============================================================ */
@@ -1513,10 +1681,24 @@ body,
 }
 
 .weather-hero-feels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
   font-size: 0.9rem;
   color: var(--text-muted);
   line-height: 1.3;
   margin-bottom: 0.15rem;
+}
+
+.weather-hero-source {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  white-space: nowrap;
+  line-height: 1.2;
 }
 
 .weather-hero-hl {
@@ -1544,16 +1726,35 @@ body,
   flex-direction: column;
 }
 
-/* 紧致：24h 预报在视口底部 */
+/* 紧凑：卡片依次排列、间隔缩短（不用 space-between，避免剩余视口空间被摊成卡片间的大间隙） */
 .weather-content.compact {
   min-height: calc(100vh - 132px);
-  justify-content: space-between;
+  justify-content: flex-start;
 }
 
 /* 松散：自然间距，卡片依次排列 */
 .weather-content.loose {
   min-height: auto;
   justify-content: flex-start;
+}
+
+/* 紧凑：缩短 六项指标 → 24h → 15日 的卡片间隔 */
+/* 注：realtime↔24h 的实际间隙由 .card-realtime.margin-bottom(6px) + .forecast-24h.margin-top(0.4rem) 组成，
+   与 App.tsx 中 COMPACT_GAP 常量配套（下拉差速视差据此闭合间隙） */
+.weather-content.compact .card-realtime {
+  margin-bottom: 6px;
+}
+.weather-content.compact .forecast-24h {
+  margin-top: 0.4rem;
+}
+.weather-content.compact .card-15day {
+  margin-top: 0;
+}
+.weather-content.compact .forecast-15day {
+  margin-top: 0.4rem;
+}
+.weather-content.compact .card-extra {
+  margin-top: 0.4rem;
 }
 
 .card-realtime {
@@ -1577,9 +1778,266 @@ body,
   margin-top: 20px;
 }
 
+/* 15 日预报下方的 空气质量 + 生活指数 区块（松散模式下与上方保持同一节奏） */
+.card-extra {
+  margin-top: 20px;
+}
+
 .scroll-placeholder {
   width: 100%;
   pointer-events: none;
+}
+
+/* ============================================================
+   15 日预报下方：空气质量（极数本源）+ 生活指数（UApiPro）
+   ============================================================ */
+
+.aq-card,
+.life-card {
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 0.6rem 0.65rem 0.65rem;
+}
+
+.aq-card + .life-card {
+  margin-top: 0.6rem;
+}
+
+/* 区块标题栏：左侧标题，右侧来源/操作提示 */
+.aq-head,
+.life-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.aq-title,
+.life-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.aq-src {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+}
+
+/* 两个 AQI 读数 */
+.aq-aqi {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.aq-aqi-item {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.4rem 0.55rem;
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid var(--card-border);
+  border-radius: 9px;
+}
+
+.aq-aqi-num {
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.aq-aqi-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.aq-aqi-meta span {
+  font-size: 0.62rem;
+  line-height: 1.3;
+  color: var(--text-dim);
+}
+
+.aq-aqi-meta span:last-child {
+  color: var(--text-muted);
+}
+
+/* 六项污染物：自动换行的简单列表 */
+.aq-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.aq-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  padding: 0.22rem 0.55rem;
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+}
+
+.aq-item-label {
+  font-size: 0.68rem;
+  color: var(--text-dim);
+}
+
+.aq-item-val {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* —— 生活指数 —— */
+.life-hint,
+.life-collapse {
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.life-collapse:active,
+.life-hint:active {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+/* 收起态：3 列 × 2 行，内部细分隔线、无外间距 */
+.life-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.life-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.18rem;
+  padding: 0.5rem 0.3rem 0.55rem;
+  border-right: 1px solid var(--card-border);
+  border-bottom: 1px solid var(--card-border);
+  min-width: 0;
+  text-align: center;
+}
+
+/* 每行第 3 列去掉右边框；最后一行（第 4~6 格）去掉下边框 */
+.life-cell:nth-child(3n) {
+  border-right: none;
+}
+
+.life-cell:nth-child(n+4) {
+  border-bottom: none;
+}
+
+.life-cell-ico {
+  width: 16px;
+  height: 16px;
+  display: block;
+  color: var(--text);
+}
+
+.life-cell-emoji {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.life-cell-level {
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.life-cell-name {
+  font-size: 0.66rem;
+  line-height: 1.2;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* 展开态：全部 18 项，每行左侧图标+名称、右侧 level+advice */
+.life-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.life-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  padding: 0.5rem 0.1rem;
+}
+
+.life-row + .life-row {
+  border-top: 1px solid var(--card-border);
+}
+
+.life-row-left {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+}
+
+.life-row-ico {
+  width: 16px;
+  height: 16px;
+  display: block;
+  color: var(--text);
+}
+
+.life-row-name {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.life-row-right {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.2rem;
+}
+
+.life-row-level {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  text-align: right;
+}
+
+.life-row-advice {
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+  text-align: right;
+  word-break: break-word;
 }
 
 /* ========== 侧边栏 ========== */
@@ -1901,6 +2359,83 @@ body,
   min-height: 200px;
   color: var(--text-muted);
   font-size: 0.9rem;
+}
+
+.debug-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.debug-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.debug-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.18), rgba(99, 102, 241, 0.08));
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.debug-section-header:active {
+  background: rgba(99, 102, 241, 0.28);
+}
+
+.debug-section-arrow {
+  font-size: 0.7rem;
+  color: #a5b4fc;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.debug-section-icon {
+  font-size: 1.1rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.debug-section-title {
+  flex: 1;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #c7d2fe;
+  letter-spacing: 0.01em;
+}
+
+.debug-section-count {
+  font-size: 0.72rem;
+  color: #818cf8;
+  font-weight: 500;
+}
+
+.debug-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 6px;
+}
+
+.debug-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0 4px 12px;
+  border-left: 2px solid rgba(99, 102, 241, 0.25);
+  margin-left: 8px;
+}
+
+.debug-child-block {
+  border-color: rgba(99, 102, 241, 0.18);
 }
 
 .debug-json-blocks {
@@ -2852,11 +3387,40 @@ body,
   line-height: 1.3;
 }
 
+.api-panel-item-cadence {
+  font-size: 0.68rem;
+  color: #38bdf8;
+  line-height: 1.3;
+  font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
+}
+
 .api-panel-item-time {
   font-size: 0.65rem;
   color: #475569;
   margin-top: 2px;
   font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
+}
+
+/* CMA 气象预警：更新间隔（点击循环切换 5/10/12/15/30 分钟） */
+.api-panel-item-interval {
+  margin-top: 0.2rem;
+  align-self: flex-start;
+  font-size: 0.68rem;
+  line-height: 1.3;
+  color: #7dd3fc;
+  font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  border-radius: 7px;
+  padding: 3px 8px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.api-panel-item-interval:active {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.5);
 }
 
 /* Toggle 开关：紧凑圆形开关，仅显示轨道 + 圆点，无文字 */

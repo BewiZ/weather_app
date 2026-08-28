@@ -54,7 +54,12 @@ export function buildWeatherCurrentFromMsn(
   if (!cur) return null;
 
   // 温度：优先 current.temp
-  const temperature = typeof cur.temp === 'number' ? cur.temp : 0;
+  const temperature = typeof cur.temp === 'number' ? cur.temp : null;
+  // 实况温度缺失 = 数据无效，返回 null 触发下一个数据源
+  if (temperature === null) {
+    console.warn('[MSN] current.temp missing, data invalid');
+    return null;
+  }
 
   // 体感：feels
   const heatIndex = typeof cur.feels === 'number' ? cur.feels : temperature;

@@ -1,4 +1,5 @@
 import type { Forecast24Style } from '../WeatherDetail/hooks/Forecast24Hour';
+import type { ForecastSource } from '../../api/unifiedWeather';
 import { SettingsMenu } from './hooks/SettingsMenu';
 
 export interface TopMenuBarProps {
@@ -6,19 +7,24 @@ export interface TopMenuBarProps {
   weatherPhrase: string;
   iconUrlFn: (phrase: string, isNight?: boolean) => string;
   gearMenuOpen: boolean;
-  styleMenuOpen: boolean;
   debugOpen: boolean;
   showPullDebug: boolean;
   layoutCompact: boolean;
   forecast24Style: Forecast24Style;
+  realtimeSource: string;
+  apiEnabled: Record<string, boolean>;
+  source24: ForecastSource;
+  source15: ForecastSource;
   onGearToggle: () => void;
   onSidebarOpen: () => void;
-  onStyleMenuToggle: () => void;
   onDebugToggle: () => void;
   onPullDebugToggle: () => void;
   onApiPanelOpen: () => void;
   onLayoutCompactChange: (val: boolean) => void;
   onForecast24StyleChange: (s: Forecast24Style) => void;
+  onRealtimeSourceChange: (s: string) => void;
+  onSource24Change: (s: ForecastSource) => void;
+  onSource15Change: (s: ForecastSource) => void;
 }
 
 export function TopMenuBar({
@@ -26,19 +32,24 @@ export function TopMenuBar({
   weatherPhrase,
   iconUrlFn,
   gearMenuOpen,
-  styleMenuOpen,
   debugOpen,
   showPullDebug,
   layoutCompact,
   forecast24Style,
+  realtimeSource,
+  apiEnabled,
+  source24,
+  source15,
   onGearToggle,
   onSidebarOpen,
-  onStyleMenuToggle,
   onDebugToggle,
   onPullDebugToggle,
   onApiPanelOpen,
   onLayoutCompactChange,
   onForecast24StyleChange,
+  onRealtimeSourceChange,
+  onSource24Change,
+  onSource15Change,
 }: TopMenuBarProps) {
   return (
     <div className="weather-topbar">
@@ -48,19 +59,24 @@ export function TopMenuBar({
       </div>
       <SettingsMenu
         gearMenuOpen={gearMenuOpen}
-        styleMenuOpen={styleMenuOpen}
         debugOpen={debugOpen}
         showPullDebug={showPullDebug}
         layoutCompact={layoutCompact}
         forecast24Style={forecast24Style}
+        realtimeSource={realtimeSource}
+        apiEnabled={apiEnabled}
+        source24={source24}
+        source15={source15}
         onGearToggle={onGearToggle}
         onSidebarOpen={onSidebarOpen}
-        onStyleMenuToggle={onStyleMenuToggle}
         onDebugToggle={onDebugToggle}
         onPullDebugToggle={onPullDebugToggle}
         onApiPanelOpen={onApiPanelOpen}
         onLayoutCompactChange={onLayoutCompactChange}
         onForecast24StyleChange={onForecast24StyleChange}
+        onRealtimeSourceChange={onRealtimeSourceChange}
+        onSource24Change={onSource24Change}
+        onSource15Change={onSource15Change}
       />
     </div>
   );

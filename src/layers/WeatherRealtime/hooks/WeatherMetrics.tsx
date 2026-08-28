@@ -3,7 +3,7 @@ import dIconHumidity from '../../../assets/Daily_Icons/humidity.svg';
 import dIconPressure from '../../../assets/Daily_Icons/pressure.svg';
 import dIconVisibility from '../../../assets/Daily_Icons/eye.svg';
 import dIconUv from '../../../assets/Daily_Icons/ultraviolet_ray.svg';
-import dIconSunrise from '../../../assets/Daily_Icons/sun_rise_set.svg';
+import dIconCloud from '../../../assets/Daily_Icons/cloud.svg';
 
 export interface WeatherMetricData {
   windSpeed: number;
@@ -14,8 +14,43 @@ export interface WeatherMetricData {
   pressTendencyCode: number;
   visibility: number;
   uvIndex: number;
-  sunrise: string;
-  sunset: string;
+  cloudCover?: number;
+  sky?: string;
+}
+
+function cloudCoverDesc(c?: number): string {
+  if (c == null) return '--';
+  if (c < 20) return '少云';
+  if (c < 50) return '多云';
+  if (c < 80) return '阴';
+  return '大阴';
+}
+
+function cloudSkyDesc(s?: string): string {
+  if (!s) return '';
+  const map: Record<string, string> = {
+    CLR: '晴空',
+    FEW: '少云',
+    SCT: '疏云',
+    BKN: '碎云',
+    OVC: '阴',
+    CLEAR_DAY: '晴',
+    CLEAR_NIGHT: '晴',
+    PARTLY_CLOUDY_DAY: '多云',
+    PARTLY_CLOUDY_NIGHT: '多云',
+    CLOUDY: '阴',
+    OVERCAST: '阴',
+    LIGHT_RAIN: '小雨',
+    MODERATE_RAIN: '中雨',
+    HEAVY_RAIN: '大雨',
+    TS_RAIN: '雷阵雨',
+    LIGHT_SNOW: '小雪',
+    MODERATE_SNOW: '中雪',
+    HEAVY_SNOW: '大雪',
+    FOG: '雾',
+    HAIL: '冰雹',
+  };
+  return map[s] || s;
 }
 
 function humidityDesc(h: number): string {
@@ -63,12 +98,6 @@ function visibilityKmToString(v: number): string {
   return s + 'km';
 }
 
-function formatSunTime(timeStr: string): string {
-  if (!timeStr) return '--';
-  const m = timeStr.match(/(\d{1,2}):(\d{2})/);
-  if (m) return m[1] + ':' + m[2];
-  return timeStr.slice(0, 5);
-}
 
 export interface WeatherMetricsProps {
   data: WeatherMetricData;
@@ -125,12 +154,15 @@ export function WeatherMetrics({ data }: WeatherMetricsProps) {
         </div>
       </div>
       <div className="detail-metric">
-        <div className="detail-metric-ico detail-sun-ico"><img src={dIconSunrise} alt="" /></div>
+        <div className="detail-metric-ico"><img src={dIconCloud} alt="" /></div>
         <div className="detail-metric-info">
-          <span className="detail-metric-name">日出/日落</span>
-          <span className="detail-metric-val-sr">
-            <span className="sr-row">{formatSunTime(data.sunrise)}</span>
-            <span className="sr-row">{formatSunTime(data.sunset)}</span>
+          <span className="detail-metric-name">云量/云况</span>
+          <span className="detail-metric-val">
+            {data.cloudCover != null ? <><span>{data.cloudCover}</span><em>%</em></> : '--'}
+          </span>
+          <span className="detail-metric-desc">
+            {data.cloudCover != null ? cloudCoverDesc(data.cloudCover) : '--'}
+            {data.sky ? ` · ${cloudSkyDesc(data.sky)}` : ''}
           </span>
         </div>
       </div>

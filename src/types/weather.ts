@@ -498,6 +498,10 @@ export interface WeatherCurrent {
   obsQualifierPhrase: string;
   obsTimeLocal?: string;
   observationTime?: string;
+  // 云量百分比（0-100），各数据源归一化后填入
+  cloudCover?: number;
+  // 云况：FEW / SCT / BKN / OVC / CLR，或中文描述
+  sky?: string;
 }
 
 export interface WeatherDay {
