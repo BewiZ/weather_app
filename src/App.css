@@ -1526,8 +1526,11 @@ body,
   opacity: 1;
 }
 
+/* 刷新中：top 不再用 CSS 覆盖。位置由 usePullRefresh 在触发瞬间写入的内联值
+   保持（progress=1.0 → top = LOADER_OFFSET + MAX_DESCEND = 52px），
+   原来的 `top: 22px !important` 会在触发瞬间把圆环上跳 30px
+   （下落位 100px → 70px），表现为一次可见的瞬移 */
 .pull-loader.refreshing {
-  top: 22px !important;
   opacity: 1 !important;
 }
 
@@ -1721,82 +1724,81 @@ body,
   letter-spacing: 0.02em;
 }
 
+/* 主容器：flex 纵向堆叠卡片；不用 space-between，避免剩余视口空间被摊成卡片间大间隙。
+   min-height 保证内容至少撑满视口（扣去顶栏 132px），使页面可向下滚动。
+   --card-gap = 卡片间距（=8px，见下方间距系统）。 */
 .weather-content {
   display: flex;
   flex-direction: column;
-}
-
-/* 紧凑：卡片依次排列、间隔缩短（不用 space-between，避免剩余视口空间被摊成卡片间的大间隙） */
-.weather-content.compact {
   min-height: calc(100vh - 132px);
   justify-content: flex-start;
+  --card-gap: 8px;
 }
 
-/* 松散：自然间距，卡片依次排列 */
-.weather-content.loose {
-  min-height: auto;
-  justify-content: flex-start;
-}
+/* ===== 卡片间距系统（紧凑，唯一布局） =====
+   DOM 结构（App.tsx → <div class="weather-content">）：
+     .card-realtime        实况卡片容器（WeatherRealtime 根 div）
+       └ .weather-hero     实况英雄区（温度/天气词/体感/高低温/CMA预警/指标），无背景透明
+            └ .weather-metrics  六项指标网格（WeatherMetrics，实况卡片末尾元素）
+     .card-forecast        24h 预报外层包装（WeatherDetail 内 div）
+       └ .forecast-24h     24h 预报卡片本体（Forecast24Hour <section>，有背景）
+     .card-15day           15 日预报外层包装（WeatherDetail 内 div）
+       └ .forecast-15day   15 日预报卡片本体（Forecast15Day <section>，有背景）
+     .card-extra           空气质量+生活指数外层包装（WeatherDetail 内 div，无背景）
+       ├ .aq-card          空气质量卡片（AirQualityList，有背景）
+       └ .life-card        生活指数卡片（LifeIndices，有背景）
+   统一卡片间隔 —— 每段间隙只由「前一卡片/外层的 margin-bottom」单独构成，全部 = --card-gap；
+   后一卡片/本体的 margin-top 一律归零防叠加。 */
 
-/* 紧凑：统一卡片间隔 —— 每段间隙只由一个值构成，全部等于 --card-gap
-   （原先 6px + 0.4rem 混合，导致 realtime→24h 12.4px、24h→15日 6.4px、15日→指数 6.4px 不一致） */
-.weather-content.compact {
-  --card-gap: 0.4rem;
-}
-.weather-content.compact .card-realtime {
+/* .card-realtime = 实况卡片容器；margin-bottom 构成 实况→24h 间隙 */
+.weather-content .card-realtime {
   margin-top: 0;
   margin-bottom: var(--card-gap);
 }
-.weather-content.compact .card-forecast,
-.weather-content.compact .forecast-24h {
-  margin-top: 0;
-}
-.weather-content.compact .card-15day {
-  margin-top: var(--card-gap);
+
+/* 实况卡片无背景，其内部尾部空白会被读作卡片间大间隙。归零后，实况→24h 视觉间隙
+   仅剩上方 --card-gap，与后续卡片一致。
+   .weather-metrics = 六项指标网格（末尾元素，原 mb 1.25rem）
+   .weather-hero     = 实况英雄区（无背景透明，原 pb 1rem） */
+.weather-content .weather-metrics {
   margin-bottom: 0;
 }
-.weather-content.compact .forecast-15day {
+.weather-content .weather-hero {
+  padding-bottom: 0;
+}
+
+/* .card-forecast = 24h 外层包装；margin-top 归零（间隙由上方 .card-realtime 的 mb 构成），
+   margin-bottom 构成 24h→15日 间隙。
+   .forecast-24h = 24h 卡片本体；margin-top 归零（原 0.75rem，避免与外层间距叠加） */
+.weather-content .card-forecast,
+.weather-content .forecast-24h {
   margin-top: 0;
 }
-.weather-content.compact .card-extra {
-  margin-top: var(--card-gap);
+.weather-content .card-forecast {
+  margin-bottom: var(--card-gap);
 }
 
-.card-realtime {
-  margin-bottom: 12px;
-  will-change: filter, transform;
+/* .card-15day = 15 日外层包装 / .forecast-15day = 15 日卡片本体；两者 margin-top 归零
+   （间隙由上方 .card-forecast 的 mb 构成）。.card-15day 的 margin-bottom 构成 15日→指数 间隙 */
+.weather-content .card-15day,
+.weather-content .forecast-15day {
+  margin-top: 0;
+}
+.weather-content .card-15day {
+  margin-bottom: var(--card-gap);
 }
 
-.weather-content.loose .card-realtime {
-  margin-bottom: 24px;
-}
-
-.card-forecast {
-  will-change: transform;
-}
-
-.weather-content.loose .card-forecast {
-  margin-bottom: 24px;
-}
-
-.card-15day {
-  margin-top: 20px;
-}
-
-/* 15 日预报下方的 空气质量 + 生活指数 区块（松散模式下与上方保持同一节奏） */
-.card-extra {
-  margin-top: 20px;
-}
-
-.scroll-placeholder {
-  width: 100%;
-  pointer-events: none;
+/* .card-extra = 空气质量+生活指数外层包装；margin-top 归零（间隙由上方 .card-15day 的 mb 构成） */
+.weather-content .card-extra {
+  margin-top: 0;
 }
 
 /* ============================================================
    15 日预报下方：空气质量（极数本源）+ 生活指数（UApiPro）
    ============================================================ */
 
+/* .aq-card = 空气质量卡片（AirQualityList） / .life-card = 生活指数卡片（LifeIndices）
+   两者均为 .card-extra 内的子卡片，有背景 */
 .aq-card,
 .life-card {
   background: rgba(15, 23, 42, 0.5);
@@ -1805,8 +1807,11 @@ body,
   padding: 0.6rem 0.65rem 0.65rem;
 }
 
-.aq-card + .life-card {
-  margin-top: 0.6rem;
+/* 空气质量卡片 → 生活指数卡片 的内部间隙（.card-extra 内两子卡片之间）：
+   由前一子卡片 .aq-card 的 margin-bottom 单独构成（:has 仅当 aq 后接 life 时生效，
+   避免仅 aq 存在时在 .card-extra 尾部留出空白）；.life-card 无 margin-top，间隙单一来源。 */
+.weather-content .aq-card:has(+ .life-card) {
+  margin-bottom: var(--card-gap);
 }
 
 /* 区块标题栏：左侧标题，右侧来源/操作提示 */
@@ -2596,6 +2601,14 @@ body,
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
   line-height: 1.4;
+  max-width: calc(100vw - 28px);
+  word-break: break-word;
+}
+
+/* 两行 span 各占一行（原靠 <br/> 分行，但 <br> 会占 debugEl.children 的索引位，
+   使 usePullRefresh 按 children[1] 定位状态行的写法失效） */
+.debug-pull-value span {
+  display: block;
 }
 
 /* ===== 15天预报卡片 ===== */
@@ -3424,28 +3437,6 @@ body,
   color: #475569;
   margin-top: 2px;
   font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
-}
-
-/* CMA 气象预警：更新间隔（点击循环切换 5/10/12/15/30 分钟） */
-.api-panel-item-interval {
-  margin-top: 0.2rem;
-  align-self: flex-start;
-  font-size: 0.68rem;
-  line-height: 1.3;
-  color: #7dd3fc;
-  font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
-  background: rgba(56, 189, 248, 0.08);
-  border: 1px solid rgba(56, 189, 248, 0.28);
-  border-radius: 7px;
-  padding: 3px 8px;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.api-panel-item-interval:active {
-  background: rgba(56, 189, 248, 0.2);
-  border-color: rgba(56, 189, 248, 0.5);
 }
 
 /* Toggle 开关：紧凑圆形开关，仅显示轨道 + 圆点，无文字 */

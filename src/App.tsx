@@ -1,9 +1,8 @@
-import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getWeatherIconUrl, isNightTime } from './assets/weatherIcons';
 import { getWeatherIconUrlSimple } from './assets/weatherIconsSimple';
 import type { Forecast24Style } from './layers/WeatherDetail/hooks/Forecast24Hour';
-import { usePullRefresh, LoaderDOM, refreshCompleteAnimation } from './layers/TopMenuBar/hooks/usePullRefresh';
+import { usePullRefresh, LoaderDOM, refreshCompleteAnimation, holdLoaderAtReady } from './layers/TopMenuBar/hooks/usePullRefresh';
 import { TopMenuBar } from './layers/TopMenuBar/TopMenuBar';
 import { WeatherRealtime } from './layers/WeatherRealtime/WeatherRealtime';
 import { buildWeatherCurrentFromJiShu } from './layers/WeatherRealtime/hooks/convertJiShuFallback';
@@ -16,7 +15,7 @@ import { fetchApiHezi } from './api/apiHezi';
 import { type ForecastSource } from './api/unifiedWeather';
 import type { JiShuData, UApiResponse, ApiHeziResponse, UnifiedAlert, WeatherCurrent, WeatherDay, WeatherYesterday } from './types/weather';
 import type { Position, AddressInfo, LocationMode, GeocodeEngine } from './types/location';
-import { base64urlDecode, windDirToCardinal, windSpeedKmHToLevel } from './lib/weatherUtils';
+import { windDirToCardinal, windSpeedKmHToLevel, WEEK_CN, ymd, coordKeyOf, buildTodaySnapshot } from './lib/weatherUtils';
 import { fetchWeatherCom } from './api/weatherCom';
 import { getLocationId, fetchQw } from './api/qweather';
 import './App.css';
@@ -24,12 +23,23 @@ import { checkLimit, recordFetch, scheduleClockAligned, isDryMinutelyPrecip, can
 import type { RateLimitResult } from './utils/rateLimit';
 import { fetchXzqhdm, type XzqhdmResponse } from './api/xzqhdm';
 import { fetchCmaAlarm, isValidAdcode, type CmaAlarm } from './api/cmaAlarm';
+import { loadTdPos, saveTdPos, fetchTiandituAddress, TIANDITU_MIN_DISTANCE_M } from './api/tianditu';
+import { fetchNominatimAddress } from './api/nominatim';
+import { distanceMeters } from './utils/geo';
+import {
+  cachedWeatherCurrent, cachedWeatherDays, cachedWeatherYesterday,
+  cachedRawNow, cachedRawFc, cachedRawYest, cachedRawYestDate,
+  cachedCmaAdcode, cachedCmaAlarms,
+  persistRawNow, persistRawFc, persistRawYest,
+  QW_EVER_CALLED_KEY,
+} from './utils/cache';
+import { REALTIME_SOURCES, API_META, loadApiEnabled, loadCmaIntervalMin } from './config/apiConfig';
+import { buildWeatherCurrentFromWeatherCom, buildWeatherDaysFromWeatherCom } from './layers/WeatherRealtime/hooks/convertWeatherCom';
+import { buildDebugSections } from './layers/DebugPanel/buildDebugSections';
+import { DebugPanel } from './layers/DebugPanel/DebugPanel';
+import { weatherTheme, accuracyLevel } from './lib/weatherTheme';
+import type { DebugSection } from './types/debug';
 
-
-const TIANDITU_KEY = (import.meta as any).env?.VITE_TIANDITU_KEY || '';
-
-// 气象预警轮询间隔可选项（分钟），默认 12
-const CMA_INTERVAL_OPTIONS = [5, 10, 12, 15, 30];
 
 
 
@@ -44,18 +54,6 @@ function App() {
   const [debugExpanded, setDebugExpanded] = useState<Set<number>>(new Set([0, 1]));
   const [debugError, setDebugError] = useState<Record<string, unknown> | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
-
-  interface DebugItem {
-    key: string;
-    value?: unknown;
-    children?: DebugItem[];
-  }
-  interface DebugSection {
-    title: string;
-    icon: string;
-    expanded: boolean;
-    items: DebugItem[];
-  }
 
   // 复制 JSON 到剪贴板
   const copyToClipboard = useCallback((key: string, value: unknown) => {
@@ -114,36 +112,55 @@ function App() {
     lastAddrRef.current.lat = lat;
     lastAddrRef.current.lng = lng;
 
+    // ===== 天地图（API 管理）门槛 =====
+    // 放在 setAddressLoading 之前：200m 内的 GPS 抖动不应反复进入加载态
+    if (targetEngine === 'tianditu') {
+      // 禁用时不发送请求，保留上次地址缓存（与「禁用 API 后显示缓存数据」一致）
+      if (!apiEnabledRef.current.tianditu) {
+        if (force) console.warn('[天地图] API 已禁用，跳过逆地理编码请求');
+        return;
+      }
+      // 位移门槛：与上次成功请求的坐标比较
+      const tdPos = loadTdPos();
+      if (!force && tdPos) {
+        const d = distanceMeters(lat, lng, tdPos.lat, tdPos.lng);
+        if (d < TIANDITU_MIN_DISTANCE_M) {
+          if (canLogRateLimit('tianditu')) {
+            console.log(`[天地图] 位移 ${d.toFixed(0)}m < ${TIANDITU_MIN_DISTANCE_M}m，跳过`);
+          }
+          return;
+        }
+      }
+      // 最小间隔（5 分钟，rate_limit_state 中 tianditu.lastAuto）
+      if (!force) {
+        const lim = checkLimit('tianditu', 'auto');
+        if (!lim.allowed) {
+          if (canLogRateLimit('tianditu')) console.log(`[RateLimit] tianditu: ${lim.reason}`);
+          return;
+        }
+      }
+    }
+
     setAddressLoading(true);
     try {
       if (targetEngine === 'tianditu') {
-        const postStr = `{'lon':${lng.toFixed(6)},'lat':${lat.toFixed(6)},'ver':1}`;
-        const url = `https://api.tianditu.gov.cn/geocoder?postStr=${encodeURIComponent(postStr)}&type=geocode&tk=${TIANDITU_KEY}`;
-        const res = await fetch(url, { headers: { 'User-Agent': 'LocateApp/1.0' } });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (data.status !== '0') throw new Error(data.msg || `status=${data.status}`);
-        const result = data.result;
-        if (!result) throw new Error('No results');
-        const addr = result.addressComponent || {};
+        const td = await fetchTiandituAddress(lat, lng);
+        const addr = td.component;
         // 缓存天地图 city + county + town 用于天气页显示
         geocodeCache.current = {
-          city: addr.city || '',
-          county: addr.county || '',
-          town: addr.town || '',
+          city: addr.city,
+          county: addr.county,
+          town: addr.town,
           lat,
           lng,
         };
-        setAddress({
-          province: addr.province || '',
-          city: addr.city || '',
-          district: addr.county || '',
-          full: result.formatted_address ||
-            [addr.province, addr.city, addr.county, addr.town].filter(Boolean).join(''),
-          poi: addr.poi || '',
-          poiDetail: addr.poi ? `${addr.poi}${addr.poi_position ? addr.poi_position + '方向' : ''}${addr.poi_distance ? '约' + addr.poi_distance + 'm' : ''}` : '',
-        });
+        setAddress(td.address);
         setAddressError('');
+
+        // 成功：刷新限流时间、位移基准、面板「上次请求」
+        recordFetch('tianditu', 'auto');
+        saveTdPos(lat, lng);
+        setApiRequestTimes(prev => ({ ...prev, tianditu: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }));
 
         // 查询行政区划代码（xzqhdm）— 用天地图解析出的省份 + 区县
         (async () => {
@@ -172,19 +189,7 @@ function App() {
         return;
       }
 
-      const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat.toFixed(6)}&lon=${lng.toFixed(6)}&format=json&zoom=18&addressdetails=1&accept-language=zh-CN`;
-      const res = await fetch(url, { headers: { 'User-Agent': 'LocateApp/1.0 (tauri-react-gps)' } });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const addr = data.address || {};
-      setAddress({
-        province: addr.province || addr.state || addr.region || '',
-        city: addr.city || addr.town || addr.municipality || addr.county || '',
-        district: addr.district || addr.suburb || addr.quarter || addr.neighbourhood || '',
-        full: data.display_name || '',
-        poi: '',
-        poiDetail: '',
-      });
+      setAddress(await fetchNominatimAddress(lat, lng));
       setAddressError('');
     } catch (e) {
       console.warn('[Geocode] failed:', e);
@@ -251,48 +256,7 @@ function App() {
     setError('');
   }, []);
 
-  // 冷启动时从 localStorage 恢复上一次天气数据，避免白屏
-  const cachedWeatherCurrent = () => {
-    try {
-      const v = localStorage.getItem('cached_weatherCurrent');
-      if (v) return JSON.parse(v);
-    } catch (_) { /* ignore */ }
-    return null;
-  };
-  const cachedWeatherDays = () => {
-    try {
-      const v = localStorage.getItem('cached_weatherDays');
-      if (v) return JSON.parse(v);
-    } catch (_) { /* ignore */ }
-    return [];
-  };
-  const cachedWeatherYesterday = () => {
-    try {
-      const v = localStorage.getItem('cached_weatherYesterday');
-      if (v) return JSON.parse(v);
-    } catch (_) { /* ignore */ }
-    return null;
-  };
-  // 冷启动恢复原始 JSON 缓存，保证调试面板能读取到数据
-  const cachedRawNow = () => { try { return JSON.parse(localStorage.getItem('cached_rawNow') || 'null'); } catch (_) { return null; } };
-  const cachedRawFc   = () => { try { return JSON.parse(localStorage.getItem('cached_rawFc') || 'null'); }   catch (_) { return null; } };
-  const cachedRawYest = () => { try { return JSON.parse(localStorage.getItem('cached_rawYest') || 'null'); } catch (_) { return null; } };
-  const cachedRawYestDate = () => localStorage.getItem('cached_rawYestDate') || '';
-  // 冷启动恢复气象预警缓存（CMA），保证重启后预警圆角矩形仍能显示
-  const cachedCmaAdcode = () => localStorage.getItem('cached_cmaAdcode') || '';
-  // 按 adcode 分区缓存，定位切换地区后不会显示旧地区的预警
-  const cachedCmaAlarms = () => {
-    try { return JSON.parse(localStorage.getItem('cached_cmaAlarms_' + cachedCmaAdcode()) || '[]'); } catch (_) { return []; }
-  };
-
-  // 原始数据写入时同步持久化到 localStorage
-  const persistRawNow = (d: Record<string, unknown> | null) => { if (d) localStorage.setItem('cached_rawNow', JSON.stringify(d)); };
-  const persistRawFc   = (d: Record<string, unknown> | null) => { if (d) localStorage.setItem('cached_rawFc', JSON.stringify(d)); };
-  const persistRawYest = (d: Record<string, unknown> | null, date?: string) => {
-    if (d) localStorage.setItem('cached_rawYest', JSON.stringify(d));
-    if (date) localStorage.setItem('cached_rawYestDate', date);
-  };
-
+  // 冷启动时从 localStorage 恢复上一次天气数据，避免白屏（见 utils/cache.ts）
   const [weatherCurrent, setWeatherCurrent] = useState<WeatherCurrent | null>(cachedWeatherCurrent());
   const [weatherDays, setWeatherDays] = useState<WeatherDay[]>(cachedWeatherDays());
   const [weatherYesterday, setWeatherYesterday] = useState<WeatherYesterday | null>(cachedWeatherYesterday());
@@ -340,11 +304,6 @@ function App() {
   const [apiRequestTimes, setApiRequestTimes] = useState<Record<string, string>>({});
 
   // 实况天气来源选择
-  const REALTIME_SOURCES: { key: string; label: string }[] = [
-    { key: 'weather_com', label: 'weather.com' },
-    { key: 'jishu',       label: '极数本源' },
-    { key: 'msn',         label: 'MSN 中国版' },
-  ];
   const [realtimeSource, setRealtimeSource] = useState<string>(() => {
     const v = (localStorage.getItem('realtime_source') || '') as string;
     return REALTIME_SOURCES.find(s => s.key === v) ? v : 'weather_com';
@@ -357,50 +316,16 @@ function App() {
   // 切换实况天气来源时，从缓存的原始数据重新构建 weatherCurrent
   // 不需要重新发起网络请求 —— 三个源的原始数据已缓存在 raw* ref 中
   useEffect(() => {
-    const wkMap = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    const wkMap = WEEK_CN;
     let rebuilt = false;
 
     if (realtimeSource === 'weather_com' && rawWeatherNow.current) {
-      const obs = rawWeatherNow.current as any;
-      if (obs && typeof obs.temperature === 'number' && !Number.isNaN(obs.temperature)) {
+      const cur = buildWeatherCurrentFromWeatherCom(rawWeatherNow.current);
+      if (cur) {
         rebuilt = true;
-        setWeatherCurrent({
-          temperature: Number(obs.temperature) || 0,
-          phrase: obs.wxPhraseLong || obs.wxPhraseMedium || obs.cloudCoverPhrase || '未知',
-          cloudCover: obs.cloudCover !== undefined ? Number(obs.cloudCover) : undefined,
-          temperatureHeatIndex: Number(obs.temperatureFeelsLike) || 0,
-          relativeHumidity: Number(obs.relativeHumidity) || 0,
-          windSpeed: Number(obs.windSpeed) || 0,
-          windDirectionCardinal: obs.windDirectionCardinal || '',
-          windDirectionDegrees: Number(obs.windDirection) || 0,
-          uvIndex: obs.uvIndex !== undefined ? Number(obs.uvIndex) : 0,
-          pressure: Number(obs.pressureMeanSeaLevel) || 0,
-          pressTendencyCode: Number(obs.pressTendencyCode) || 0,
-          visibility: Number(obs.visibility) || 0,
-          sunrise: obs.sunriseTimeLocal || '',
-          sunset: obs.sunsetTimeLocal || '',
-          obsQualifierPhrase: '',
-          obsTimeLocal: obs.observationTime || '',
-          observationTime: obs.observationTime || '',
-        });
+        setWeatherCurrent(cur);
         // 7 天预报从 rawWeatherFc 重建
-        if (rawWeatherFc.current) {
-          const fc = rawWeatherFc.current as any;
-          const days: WeatherDay[] = [];
-          for (let i = 0; i < 7; i++) {
-            const date = new Date();
-            date.setDate(date.getDate() + i);
-            const dateStr = date.toISOString().slice(0, 10);
-            days.push({
-              date: dateStr,
-              dayOfWeek: fc.dayOfWeek?.[i] || wkMap[date.getDay()] || '',
-              calendarDayTemperatureMax: Number(fc.temperatureMax?.[i]) || 0,
-              calendarDayTemperatureMin: Number(fc.temperatureMin?.[i]) || 0,
-              narrative: fc.narrative?.[i] || (fc.daypart?.[0]?.narrative?.[i * 2] || ''),
-            });
-          }
-          setWeatherDays(days);
-        }
+        setWeatherDays(buildWeatherDaysFromWeatherCom(rawWeatherFc.current, wkMap));
       }
     } else if (realtimeSource === 'jishu' && rawJiShu.current) {
       const fallback = buildWeatherCurrentFromJiShu(rawJiShu.current, wkMap);
@@ -450,22 +375,8 @@ function App() {
 
   // ===== API 启用/禁用管理 =====
   // 管理所有数据源的启用状态；禁用时不发送请求，显示缓存数据 + 红色覆盖
-  const DEFAULT_API_ENABLED: Record<string, boolean> = {
-    weather_com: true,    // weather.com（当前天气 + 7天预报）
-    jishu: true,           // 极数本源（24小时 / 15天 / AQI / 预警）
-    msn: false,            // MSN 中国版（当前天气 + 10天预报）
-    uapi: true,            // UApiPro（24小时 / 15天 / 预警）
-    api_hezi: true,        // 接口盒子（预警补充）
-    qweather: true,        // QWeather（昨日历史天气）
-    cma: true,             // 中央气象台 CMA（气象预警 map/alarm）
-  };
-  const [apiEnabled, setApiEnabled] = useState<Record<string, boolean>>(() => {
-    try {
-      const v = localStorage.getItem('api_enabled');
-      if (v) { const p = JSON.parse(v); return { ...DEFAULT_API_ENABLED, ...p }; }
-    } catch (_) { /* ignore */ }
-    return DEFAULT_API_ENABLED;
-  });
+  // 默认值与「和风天气默认常闭」的一次性迁移见 config/apiConfig.ts
+  const [apiEnabled, setApiEnabled] = useState<Record<string, boolean>>(loadApiEnabled);
   // MSN 与 weather.com 可共存：实时天气可启用多个源，主源（realtimeSource）决定显示哪个
   const setApiEnabledCache = useCallback((key: string, val: boolean) => {
     setApiEnabled(prev => {
@@ -480,30 +391,15 @@ function App() {
   // 定义在 fetchNewSources 之后，避免 TDZ
   // (移到底部实现)
 
-  // API 元信息：显示名 + 描述（含刷新规则）
-  const API_META: Record<string, { label: string; desc: string; cadence: string }> = {
-    weather_com: { label: 'weather.com', desc: '当前天气 + 7天预报', cadence: '🕐 自动5分钟 · 手动间隔3分钟' },
-    jishu:       { label: '极数本源',     desc: '24小时预报 / 15天预报 / AQI / 预警', cadence: '🕐 自动2分钟（无降水15分钟） · 日限1500次' },
-    msn:         { label: 'MSN 中国版',   desc: '当前天气 + 10天预报（可与 weather.com 共存）', cadence: '🕐 自动5分钟 · 手动间隔3分钟' },
-    uapi:        { label: 'UApiPro',      desc: '24小时预报 / 15天预报 / 预警', cadence: '🕐 自动1小时 · 日限35次' },
-    api_hezi:    { label: '接口盒子',     desc: '预警补充', cadence: '🕐 自动5分钟 · 手动间隔10秒' },
-    qweather:    { label: 'QWeather',     desc: '昨日历史天气', cadence: '🕐 自动12小时 · 日限20次' },
-    cma:         { label: '中央气象台 CMA', desc: '气象预警（map/alarm，需区县级 adcode）', cadence: '🕐 自动轮询 · 间隔可设' },
-  };
+  // reverseGeocode 在 GPS watch（deps 为空）的闭包里被调用，
+  // apiEnabled 必须经 ref 读取，否则在 API 管理里开关天地图不会立即生效
+  const apiEnabledRef = useRef(apiEnabled);
+  apiEnabledRef.current = apiEnabled;
 
-  // 气象预警轮询间隔（分钟）；API 管理面板中点击循环切换
-  const [cmaIntervalMin, setCmaIntervalMin] = useState<number>(() => {
-    const n = parseInt(localStorage.getItem('cma_interval_min') || '', 10);
-    return CMA_INTERVAL_OPTIONS.includes(n) ? n : 12;
-  });
-  const setCmaIntervalMinCache = useCallback((n: number) => {
-    setCmaIntervalMin(n);
-    try { localStorage.setItem('cma_interval_min', String(n)); } catch (_) { /* ignore */ }
-  }, []);
-  const cycleCmaInterval = useCallback(() => {
-    const next = CMA_INTERVAL_OPTIONS[(CMA_INTERVAL_OPTIONS.indexOf(cmaIntervalMin) + 1) % CMA_INTERVAL_OPTIONS.length];
-    setCmaIntervalMinCache(next);
-  }, [cmaIntervalMin, setCmaIntervalMinCache]);
+  // API 元信息（显示名 + 描述 + 刷新规则）见 config/apiConfig.ts
+
+  // 气象预警轮询间隔（分钟）：只读配置，面板仅展示当前值，不再提供点击切换
+  const [cmaIntervalMin] = useState<number>(loadCmaIntervalMin);
 
   // API 管理面板
   const [apiPanelOpen, setApiPanelOpen] = useState(false);
@@ -517,27 +413,6 @@ function App() {
     setForecast24Style(s);
     try { localStorage.setItem('forecast24_style', s); } catch (_) { /* ignore */ }
   }, []);
-
-  // 详情卡片布局：紧凑（24h 在视口底部）vs 松散（自然间距）
-  const [layoutCompact, setLayoutCompact] = useState<boolean>(() => {
-    const v = localStorage.getItem('layout_compact');
-    return v !== 'false'; // 默认紧致
-  });
-  const setLayoutCompactCache = useCallback((val: boolean) => {
-    setLayoutCompact(val);
-    try { localStorage.setItem('layout_compact', String(val)); } catch (_) { /* ignore */ }
-  }, []);
-
-  // layoutCompact 镜像 ref：recompute effect 的依赖不含 layoutCompact，
-  // 用 ref 让 getMaxScroll 始终读到当前布局，避免闭包过期导致松散模式下量错
-  const layoutCompactRef = useRef(layoutCompact);
-  useEffect(() => {
-    layoutCompactRef.current = layoutCompact;
-    // 布局切换会改变 scrollHeight，需立即重算并归位（夹紧当前滚动量、重放 transform）
-    pageMaxScroll.current = getMaxScroll();
-    applyScroll(pageScrollY.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layoutCompact]);
 
   // 数据持久化：jishuData / uapiData / position / address 落地 localStorage
   // 以便下次启动时直接显示上次数据（冷启动不白屏）
@@ -576,6 +451,21 @@ function App() {
       else localStorage.removeItem('cached_weatherYesterday');
     } catch (_) { /* ignore */ }
   }, [weatherYesterday]);
+
+  // 「今日快照」持久化：和风天气常闭时，次日显示「昨日」直接读它，无需再请求
+  // 按日期+坐标分键（ywtoday_YYYYMMDD_x,y），最新一份另存 cached_todaySnapshot 供调试面板查看
+  useEffect(() => {
+    if (!weatherCurrent || !position) return;
+    try {
+      const snap = buildTodaySnapshot(weatherCurrent, weatherDays, new Date());
+      if (!snap) return;
+      const ck = coordKeyOf(position.lat, position.lng);
+      localStorage.setItem(`ywtoday_${snap.date}_${ck}`, JSON.stringify(snap));
+      localStorage.setItem('cached_todaySnapshot', JSON.stringify({
+        date: snap.date, coordKey: ck, lat: position.lat, lng: position.lng, data: snap,
+      }));
+    } catch (_) { /* ignore */ }
+  }, [weatherCurrent, weatherDays, position]);
 
   useEffect(() => {
     try {
@@ -630,7 +520,7 @@ function App() {
     try {
       // enabledOverride：开关切换等场景传入即时状态，绕过闭包捕获旧值的延迟
       const _enabled = enabledOverride ?? apiEnabled;
-      const wkMap = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+      const wkMap = WEEK_CN;
       const _mode: 'auto' | 'manual' = isManual ? 'manual' : 'auto';
 
       // 实况天气来源：按用户选择的顺序排列。主源（realtimeSource）决定显示数据，
@@ -668,49 +558,16 @@ function App() {
               console.warn('[weather.com] observation returned null/invalid fields, falling back to next source');
               continue;
             }
-            const sunriseStr = (obs as any).sunriseTimeLocal || '';
-            const sunsetStr = (obs as any).sunsetTimeLocal || '';
             if (isPrimary) {
-              setWeatherCurrent({
-                temperature: Number((obs as any).temperature) || 0,
-                phrase: (obs as any).wxPhraseLong || (obs as any).wxPhraseMedium || (obs as any).cloudCoverPhrase || '未知',
-                cloudCover: (obs as any).cloudCover !== undefined ? Number((obs as any).cloudCover) : undefined,
-                temperatureHeatIndex: Number((obs as any).temperatureFeelsLike) || 0,
-                relativeHumidity: Number((obs as any).relativeHumidity) || 0,
-                windSpeed: Number((obs as any).windSpeed) || 0,
-                windDirectionCardinal: (obs as any).windDirectionCardinal || '',
-                windDirectionDegrees: Number((obs as any).windDirection) || 0,
-                uvIndex: (obs as any).uvIndex !== undefined ? Number((obs as any).uvIndex) : 0,
-                pressure: Number((obs as any).pressureMeanSeaLevel) || 0,
-                pressTendencyCode: Number((obs as any).pressTendencyCode) || 0,
-                visibility: Number((obs as any).visibility) || 0,
-                sunrise: sunriseStr,
-                sunset: sunsetStr,
-                obsQualifierPhrase: '',
-                obsTimeLocal: (obs as any).observationTime || '',
-                observationTime: (obs as any).observationTime || '',
-              });
+              // 当前天气与 7 天预报的映射见 convertWeatherCom.ts
+              setWeatherCurrent(buildWeatherCurrentFromWeatherCom(obs));
 
               // 仅主源控制显示：设置天气天数
               const fc = await fetchWeatherCom('forecast/daily/10day', lat, lng);
               rawWeatherFc.current = fc;
               persistRawFc(fc);
               setApiRequestTimes(prev => ({ ...prev, weather_com: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }));
-              const days: WeatherDay[] = [];
-              const f = fc as any;
-              for (let i = 0; i < 7; i++) {
-                const date = new Date();
-                date.setDate(date.getDate() + i);
-                const dateStr = date.toISOString().slice(0, 10);
-                days.push({
-                  date: dateStr,
-                  dayOfWeek: f.dayOfWeek?.[i] || wkMap[date.getDay()] || '',
-                  calendarDayTemperatureMax: Number(f.temperatureMax?.[i]) || 0,
-                  calendarDayTemperatureMin: Number(f.temperatureMin?.[i]) || 0,
-                  narrative: f.narrative?.[i] || (f.daypart?.[0]?.narrative?.[i * 2] || ''),
-                });
-              }
-              setWeatherDays(days);
+              setWeatherDays(buildWeatherDaysFromWeatherCom(fc, wkMap));
             }
           } catch (e) {
             console.warn('[weather.com realtime]', (e as Error).message);
@@ -757,35 +614,51 @@ function App() {
         }
       }
 
-      // 昨日天气（本地缓存，每天只请求一次）
+      // ===== 昨日天气 =====
+      // 和风天气默认常闭，解析顺序：
+      //   1) QWeather 历史缓存 yw_<昨天>_<坐标>（此前启用过且拉取成功）
+      //   2) 本应用「今日快照」缓存 ywtoday_<昨天>_<坐标>（昨日运行本应用时缓存的当日数据）
+      //   3) 开关已开启 → 请求 /v7/historical/weather
+      //   4) 从未请求过 → 首次使用请求一次（写 qw_ever_called），之后不再自动请求
+      //   5) 其余情况跳过，不消耗和风配额
       const now = new Date();
-      const todayY = now.getFullYear();
-      const todayM = now.getMonth();
-      const todayD = now.getDate();
-      const yesterday = new Date(todayY, todayM, todayD - 1);
-      const ydStr = yesterday.getFullYear().toString() +
-        String(yesterday.getMonth() + 1).padStart(2, '0') +
-        String(yesterday.getDate()).padStart(2, '0');
+      const ydStr = ymd(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
       // 粗粒度坐标（整数度，与 GeoAPI 区级缓存一致）
-      const coordKey = `${Math.round(lat)},${Math.round(lng)}`;
+      const coordKey = coordKeyOf(lat, lng);
       const cacheKey = `yw_${ydStr}_${coordKey}`;
-      const cached = localStorage.getItem(cacheKey);
-      if (cached) {
-        setWeatherYesterday(JSON.parse(cached));
-        // 调试面板需展示 /historical/weather 原始返回 JSON：从原始缓存读取（无则留空，由调试面板实时拉取）
-        const rawCached = localStorage.getItem(`ywraw_${ydStr}_${coordKey}`);
-        if (rawCached) {
-          try {
+      const histCache = localStorage.getItem(cacheKey);
+      const snapCache = localStorage.getItem(`ywtoday_${ydStr}_${coordKey}`);
+      // 是否允许请求和风：开关已开启，或本设备从未请求过（首次使用单次调用）
+      const shouldCallQw = !!_enabled.qweather || !localStorage.getItem(QW_EVER_CALLED_KEY);
+      if (histCache) {
+        try {
+          setWeatherYesterday(JSON.parse(histCache));
+          // 调试面板需展示 /historical/weather 原始返回 JSON：从原始缓存读取（无则留空，由调试面板实时拉取）
+          const rawCached = localStorage.getItem(`ywraw_${ydStr}_${coordKey}`);
+          if (rawCached) {
             const _yFromCache = { 查询日期: ydStr, ...JSON.parse(rawCached) };
             rawYesterday.current = _yFromCache;
             rawYesterdayDate.current = ydStr;
             persistRawYest(_yFromCache, ydStr);
-          } catch (_) { /* ignore */ }
-        }
-      } else if (!apiEnabled.qweather) {
-        // QWeather 已禁用：跳过请求，保留缓存数据
+          }
+        } catch (_) { /* 缓存损坏：留空，等下次请求刷新 */ }
+      } else if (snapCache) {
+        // 昨日 = 本应用缓存的「今日快照」，不请求和风天气
+        try {
+          const snap = JSON.parse(snapCache) as WeatherYesterday;
+          setWeatherYesterday(snap);
+          rawYesterday.current = {
+            查询日期: ydStr,
+            来源: '本应用今日快照缓存（未调用和风天气）',
+            数据: snap,
+          };
+          rawYesterdayDate.current = ydStr;
+          persistRawYest(rawYesterday.current, ydStr);
+        } catch (_) { /* 缓存损坏：留空，等下次快照刷新 */ }
+      } else if (!shouldCallQw) {
+        // 和风天气常闭且此前已调用过一次：跳过请求，不消耗配额
       } else {
-        // QWeather 时间机器（历史天气） — 当天首次请求 + 速率限制
+        // QWeather 时间机器（历史天气） — 首次使用 / 开关已开启
         let qwSkip = false;
         if (!force) {
           const _qwLim = checkLimit('qweather', _mode);
@@ -795,6 +668,8 @@ function App() {
           }
         }
         if (!qwSkip) {
+          // 标记「已调用过」：无论成败，之后保持常闭不再自动请求（次日读今日快照）
+          try { localStorage.setItem(QW_EVER_CALLED_KEY, String(Date.now())); } catch (_) { /* ignore */ }
           try {
             const locationId = await getLocationId(lat, lng);
             const histData = await fetchQw('historical/weather', locationId, `date=${ydStr}`);
@@ -970,18 +845,22 @@ function App() {
     if (!val) return; // 仅在打开时触发一次请求，关闭不请求
     if (!position) return;
     const { lat, lng } = position;
-    if (key === 'weather_com' || key === 'jishu' || key === 'msn') {
+    if (key === 'weather_com' || key === 'jishu' || key === 'msn' || key === 'qweather') {
       // 开关切换属于用户主动操作，使用 manual 模式（限流窗口更宽松）
       // 传入 next 作为 enabledOverride，绕过闭包捕获旧 apiEnabled 的延迟
+      // 和风的「昨日天气」请求在 fetchWeather 内完成，因此归入此分支
       fetchWeather(lat, lng, true, false, next);
-    } else if (key === 'uapi' || key === 'api_hezi' || key === 'qweather') {
+    } else if (key === 'uapi' || key === 'api_hezi') {
       fetchNewSources(lat, lng,
         (addressRef.current || address)?.city || '',
         (addressRef.current || address)?.province || '',
         (addressRef.current || address)?.district || '',
         true, false, next);
+    } else if (key === 'tianditu') {
+      // force=true：绕过 5 分钟间隔与 200m 位移门槛，立即重新解析地址
+      void reverseGeocode(lat, lng, true, 'tianditu');
     }
-  }, [position, address, addressRef, setApiEnabledCache, fetchWeather, fetchNewSources, apiEnabled]);
+  }, [position, address, addressRef, setApiEnabledCache, fetchWeather, fetchNewSources, reverseGeocode, apiEnabled]);
 
   // 合并预警：极数本源为主，接口盒子为备，UApiPro 补充
   useEffect(() => {
@@ -1063,10 +942,6 @@ function App() {
   const pageMaxScroll = useRef(0);
   const weatherPageRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
-  const cardRealtimeRef = useRef<HTMLDivElement>(null);
-  const cardForecastRef = useRef<HTMLDivElement>(null);
-  const card15dayRef = useRef<HTMLDivElement>(null);
-  const scrollPlaceholderRef = useRef<HTMLDivElement>(null);
   const contentOffset = useRef(0);
   // 新加载器 refs（loaderDOM 由 usePullRefresh hook 直接操作）
   const pullLoaderRef = useRef<HTMLDivElement>(null);
@@ -1078,6 +953,9 @@ function App() {
   // 调试面板拖动（从右侧划出）
 
   // 同步单个 ref → hook 的 loaderDOM 聚合对象
+  // showPullDebug 必须进依赖：调试面板是条件渲染，挂载时机晚于首帧，
+  // 首帧 effect 取到的 debugEl 恒为 null；开关变化后需重新取一次，
+  // 否则面板永远收不到进度更新。
   useEffect(() => {
     loaderDOM.current = {
       loader: pullLoaderRef.current,
@@ -1087,75 +965,29 @@ function App() {
       circleFull: circleFullRef.current,
       debugEl: debugPullRef.current,
     };
-  }, []);
-
-  // 差速视差常量：lag + boost 需恰好等于 realtime↔forecast 的卡片间隙，才能把间隙完全闭合
-  // LOOSE_GAP = .card-realtime 在 loose 下的 margin-bottom (24px)
-  // COMPACT_GAP = compact 下 .weather-content.compact 的 --card-gap (8px)，与 App.css 保持同步
-  const LOOSE_GAP = 24;
-  const COMPACT_GAP = 8;
-  const STAGE_END = 24;    // 差速阶段结束 sy，gap 闭合后 lag/boost 固定
-  const LOOSE_STAGE = STAGE_END;
-  const BLUR_MAX = 4;      // 实况天气最大模糊半径
-  // 紧凑/松散使用不同的间隙，lag/boost 按比例分配（realtime 承担 1/3）
-  const gapForLayout = layoutCompactRef.current ? COMPACT_GAP : LOOSE_GAP;
-  const LAG_MAX = gapForLayout / 3;
-  const BOOST_MAX = gapForLayout - LAG_MAX;
+  }, [showPullDebug]);
 
   function getMaxScroll() {
     const c = contentRef.current;
     const p = weatherPageRef.current;
-    if (c && p) {
-      const natural = Math.max(0, c.scrollHeight - p.clientHeight);
-      // 松散：至少保证 LOOSE_STAGE 的滚动量完成差速，其他情况自然溢出
-      return layoutCompactRef.current ? natural : Math.max(natural, LOOSE_STAGE);
-    }
+    if (c && p) return Math.max(0, c.scrollHeight - p.clientHeight);
     return 0;
   }
 
   /**
    * 应用滚动状态（零 React 重渲染，直接操作 DOM transform，120Hz 触摸友好）。
-   * - 紧致：realtime 滞后（lag） + forecast 提前（boost）→ 间距被压缩至 0，
-   *   同时 realtime 逐渐模糊（0 → BLUR_MAX px）。
-   * - 松散：整体 1:1 平移，卡片无独立差速，无模糊。
-   *   差速结束后 lag/boost 固定，content 继续 1:1 平移露出占位符区域。
+   * 内容 1:1 跟随手指，可滚动范围由 getMaxScroll()（内容高度 − 视口高度）决定。
    */
   function applyScrollState() {
     const sy = pageScrollY.current;
-
-    // 内容始终 1:1 跟随手指
     if (contentRef.current) {
       contentRef.current.style.transform = sy > 0 ? `translateY(${-sy}px)` : 'translateY(0)';
-    }
-
-    if (sy <= 0) {
-      cardRealtimeRef.current?.style.removeProperty('transform');
-      cardRealtimeRef.current?.style.removeProperty('filter');
-      cardForecastRef.current?.style.setProperty('transform', 'translateY(0px)');
-      return;
-    }
-
-    if (layoutCompactRef.current) {
-      // 紧致差速：realtime 滞后 + forecast 提前 → gap 闭合
-      const u = Math.min(sy / STAGE_END, 1);
-      const lag = LAG_MAX * u;      // realtime 滞后量
-      const boost = BOOST_MAX * u;   // forecast 提前量
-      const blur = BLUR_MAX * u;     // 模糊半径
-      cardRealtimeRef.current?.style.setProperty('transform', `translateY(${lag}px)`);
-      cardForecastRef.current?.style.setProperty('transform', `translateY(${-boost}px)`);
-      cardRealtimeRef.current?.style.setProperty('filter', `blur(${blur}px)`);
-      cardRealtimeRef.current?.style.setProperty('will-change', 'filter, transform');
-    } else {
-      // 松散：无差速
-      cardRealtimeRef.current?.style.removeProperty('transform');
-      cardRealtimeRef.current?.style.removeProperty('filter');
-      cardForecastRef.current?.style.setProperty('transform', 'translateY(0px)');
     }
   }
 
   // 滚动状态用 requestAnimationFrame 批处理：
   // handleTouchMove 每帧（120Hz）都被调用，若同步写入 DOM 会导致大量
-  // transform/filter 重排；RAF 保证每帧最多一次 applyScrollState，流畅度提升显著。
+  // transform 重排；RAF 保证每帧最多一次 applyScrollState，流畅度提升显著。
   const scrollRAF = useRef<number>(0);
   function scheduleScrollState() {
     if (scrollRAF.current) return;
@@ -1170,11 +1002,7 @@ function App() {
   }
 
   function resetPullTransforms() {
-    // 全部归位：content 归零，卡片差速/模糊归零
     if (contentRef.current) contentRef.current.style.transform = 'translateY(0)';
-    cardForecastRef.current?.style.setProperty('transform', 'translateY(0px)');
-    cardRealtimeRef.current?.style.removeProperty('transform');
-    cardRealtimeRef.current?.style.removeProperty('filter');
   }
 
   // 下拉刷新加载器 DOM（由 usePullRefresh hook 操作，App.tsx 不再重复实现动画逻辑）
@@ -1189,6 +1017,9 @@ function App() {
 
   const refreshAll = useCallback(async (): Promise<void> => {
     setIsRefreshing(true);
+    // 钉住加载器在下落位：下拉触发时 handleTouchEnd 已写过，
+    // 这里覆盖 F5 键盘等「无下拉直接刷新」的路径（原先靠 CSS `top: 22px !important` 硬补）
+    holdLoaderAtReady(loaderDOM.current ?? ({} as LoaderDOM), showPullDebug);
     lastRefresh.current = Date.now();
     let pos = position;
     try {
@@ -1248,21 +1079,6 @@ function App() {
     return () => { ro?.disconnect(); window.removeEventListener('resize', recompute); };
   }, [jishuData, weatherYesterday]);
 
-  // 测量 15 天预报高度，按 2 倍设置占位符高度
-  useEffect(() => {
-    const card = card15dayRef.current;
-    const placeholder = scrollPlaceholderRef.current;
-    if (!card || !placeholder) return;
-    const update = () => {
-      const h = card.offsetHeight;
-      if (h > 0) { placeholder.style.height = `${h * 2}px`; }
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(card);
-    return () => ro.disconnect();
-  }, [jishuData, weatherYesterday]);
-
   // 调试：获取原始 API 数据（分一级/二级目录）
   const fetchDebugData = useCallback(async () => {
     setGearMenuOpen(false);
@@ -1278,233 +1094,24 @@ function App() {
         return;
       }
 
-      const lat = position.lat;
-      const lng = position.lng;
 
-      const today = new Date();
-      const todayY = today.getFullYear(), todayM = today.getMonth(), todayD = today.getDate();
-      const yesterday = new Date(todayY, todayM, todayD - 1);
-      const ydStr = yesterday.getFullYear().toString() +
-        String(yesterday.getMonth() + 1).padStart(2, '0') +
-        String(yesterday.getDate()).padStart(2, '0');
-      const coordKey = `${Math.round(lat)},${Math.round(lng)}`;
-      const nowUnix = Math.floor(Date.now() / 1000);
-      const nowShanghai = new Date(Date.now()).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-      const tauriWin = (window as any).__TAURI__;
-      const tauriInt = (window as any).__TAURI_INTERNALS__;
-
-      const nowCached = !!rawWeatherNow.current;
-      const fcCached = !!rawWeatherFc.current;
-      const yestCached = !!(rawYesterday.current && rawYesterdayDate.current === ydStr);
-
-      const needLive = !nowCached || !fcCached || !yestCached;
-
-      // ── Section 1: 环境信息 ──
-      const envItems: DebugItem[] = [
-        { key: '调试版本', value: 'v2.1 — 缓存优先' },
-        { key: '请求坐标', value: `lat=${lat.toFixed(6)}, lng=${lng.toFixed(6)}` },
-        { key: 'Tauri 运行时', children: [
-          { key: '__TAURI__ 存在', value: !!tauriWin },
-          { key: '__TAURI__.invoke 类型', value: typeof (tauriWin?.invoke) },
-          { key: '__TAURI_INTERNALS__ 存在', value: !!tauriInt },
-          { key: '__TAURI_INTERNALS__.invoke 类型', value: typeof (tauriInt?.invoke) },
-          { key: '__TAURI_INTERNALS__ 属性', value: Object.keys(tauriInt || {}).join(', ') },
-          { key: 'window tauri 键', value: Object.keys(window).filter(k => k.toLowerCase().includes('tauri')).join(', ') },
-        ]},
-        { key: '缓存状态', value: `当前=${nowCached?'✓':'✗'} 7天=${fcCached?'✓':'✗'} 昨日=${yestCached?'✓':'✗'}` },
-      ];
-
-      const wcItems: DebugItem[] = [];
-      const qwItems: DebugItem[] = [];
-
-      const sections: DebugSection[] = [
-        { title: '环境信息', icon: '🖥️', expanded: true, items: envItems },
-        { title: 'weather.com', icon: '🌤️', expanded: true, items: wcItems },
-        { title: 'QWeather / JWT', icon: '🔐', expanded: false, items: qwItems },
-      ];
-
-      const otherItems: DebugItem[] = [];
-
-      if (needLive) {
-        const batch = await Promise.allSettled([
-          (async () => {
-            try {
-              const r = await Promise.race([tauriInvoke('ping_test'),
-                new Promise<never>((_, rej) => setTimeout(() => rej(new Error('超时')), 3000))]);
-              return typeof r === 'string' ? r : JSON.stringify(r);
-            } catch (e) { return `[ping_test 超时] ${e}`; }
-          })(),
-          (async () => {
-            if (nowCached) return { cached: true, data: rawWeatherNow.current };
-            try {
-              const r = await fetchWeatherCom('observations/current', lat, lng);
-              rawWeatherNow.current = r;
-              persistRawNow(r);
-              return { cached: false, data: r };
-            } catch (e) { return { cached: false, error: (e as Error).message, data: {} }; }
-          })(),
-          (async () => {
-            if (fcCached) return { cached: true, data: rawWeatherFc.current };
-            try {
-              const r = await fetchWeatherCom('forecast/daily/10day', lat, lng);
-              rawWeatherFc.current = r;
-              persistRawFc(r);
-              return { cached: false, data: r };
-            } catch (e) { return { cached: false, error: (e as Error).message, data: {} }; }
-          })(),
-          (async () => {
-            if (yestCached) return { cached: true, data: rawYesterday.current };
-            try {
-              const jwt = (await Promise.race([
-                tauriInvoke('generate_jwt'),
-                new Promise<never>((_, rej) => setTimeout(() => rej(new Error('超时')), 3000)),
-              ])) as string;
-              const cachedGeo = localStorage.getItem(`geo_${coordKey}`);
-              const locationId = cachedGeo || await getLocationId(lat, lng, jwt);
-              const hist = await fetchQw('historical/weather', locationId, `date=${ydStr}`, jwt);
-              rawYesterday.current = { 查询日期: ydStr, ...hist };
-              rawYesterdayDate.current = ydStr;
-              try { localStorage.setItem(`ywraw_${ydStr}_${coordKey}`, JSON.stringify(hist)); } catch (_) { /* ignore */ }
-              persistRawYest({ 查询日期: ydStr, ...hist }, ydStr);
-              return { cached: false, data: { 查询日期: ydStr, ...hist } };
-            } catch (e) {
-              rawYesterday.current = { 查询日期: ydStr, 错误: (e as Error).message };
-            persistRawYest({ 查询日期: ydStr, 错误: (e as Error).message });
-              rawYesterdayDate.current = ydStr;
-              return { cached: false, data: { 查询日期: ydStr, 错误: (e as Error).message }, error: (e as Error).message };
-            }
-          })(),
-          (async () => {
-            try {
-              const r = (await Promise.race([
-                tauriInvoke('generate_jwt'),
-                new Promise<never>((_, rej) => setTimeout(() => rej(new Error('超时')), 3000)),
-              ])) as string;
-              return typeof r === 'string' ? r : String(r);
-            } catch (e) { return ''; }
-          })(),
-        ]);
-
-        envItems.push({ key: 'ping_test', value: (batch[0] as PromiseFulfilledResult<any>).value });
-
-        const nowData = (batch[1] as PromiseFulfilledResult<{ cached: boolean, data: any, error?: string }> | undefined)?.value?.data || {};
-        const fcData = (batch[2] as PromiseFulfilledResult<{ cached: boolean, data: any, error?: string }> | undefined)?.value?.data || {};
-        const yestData = (batch[3] as PromiseFulfilledResult<{ cached: boolean, data: any, error?: string }> | undefined)?.value?.data || {};
-
-        const nowRes = batch[1] as PromiseFulfilledResult<any> | undefined;
-        const fcRes = batch[2] as PromiseFulfilledResult<any> | undefined;
-        const yestRes = batch[3] as PromiseFulfilledResult<any> | undefined;
-
-        wcItems.push(
-          { key: '当前天气', children: [
-            { key: '数据来源', value: nowRes?.value?.cached ? '从主界面缓存读取' : nowRes?.value?.error || '实时请求完成' },
-            { key: '原始数据', value: nowData },
-          ]},
-          { key: '7天预报', children: [
-            { key: '数据来源', value: fcRes?.value?.cached ? '从主界面缓存读取' : fcRes?.value?.error || '实时请求完成' },
-            { key: '原始数据', value: fcData },
-          ]},
-          { key: '昨日天气', children: [
-            { key: '数据来源', value: yestRes?.value?.cached ? '从主界面缓存读取' : yestRes?.value?.error || '实时请求完成' },
-            { key: '查询日期', value: ydStr },
-            { key: '原始数据', value: Object.assign({}, yestData, { 查询日期: ydStr }) },
-          ]},
-        );
-
-        // JWT 解码
-        const debugJwt = (batch[4] as PromiseFulfilledResult<string> | undefined)?.value || '';
-        if (debugJwt) {
-          const parts = debugJwt.split('.');
-          const jwtChildren: DebugItem[] = [
-            { key: '总长度', value: debugJwt.length },
-            { key: '段数 (3段正确?)', value: parts.length === 3 ? '段数正确' : `段数=${parts.length}` },
-            { key: '含 = 号?', value: debugJwt.includes('=') ? '是⚠️' : '否✓' },
-            { key: '含 + 或 /?', value: (debugJwt.includes('+') || debugJwt.includes('/')) ? '是⚠️' : '否✓' },
-          ];
-          if (parts.length >= 1) {
-            try { jwtChildren.push({ key: 'Header (解码)', value: JSON.stringify(JSON.parse(base64urlDecode(parts[0]))) }); }
-            catch (e) { jwtChildren.push({ key: 'Header 解码失败', value: (e as Error).message }); }
-          }
-          if (parts.length >= 2) {
-            try {
-              const payload = JSON.parse(base64urlDecode(parts[1]));
-              jwtChildren.push({ key: 'Payload (解码)', value: JSON.stringify(payload) });
-              jwtChildren.push({ key: 'iat (UNIX)', value: payload.iat });
-              jwtChildren.push({ key: 'iat (时间)', value: new Date(payload.iat * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) });
-              jwtChildren.push({ key: 'exp (UNIX)', value: payload.exp });
-              jwtChildren.push({ key: 'exp (时间)', value: new Date(payload.exp * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) });
-              jwtChildren.push({ key: 'sub', value: payload.sub });
-              jwtChildren.push({ key: '当前时间 (UNIX)', value: nowUnix });
-              jwtChildren.push({ key: '当前时间 (上海)', value: nowShanghai });
-              jwtChildren.push({ key: '已过期?', value: payload.exp < nowUnix ? '是⚠️' : `否, 剩余 ${payload.exp - nowUnix}s` });
-            } catch (e) { jwtChildren.push({ key: 'Payload 解码失败', value: (e as Error).message }); }
-          }
-          if (parts.length >= 3) jwtChildren.push({ key: '签名长度', value: parts[2].length });
-
-          qwItems.push({ key: 'JWT 完整', value: `══════════ 复制 JWT 到 https://jwt.io/ 验证 ══════════\n\n${debugJwt}` });
-          qwItems.push({ key: 'JWT 详情', children: jwtChildren });
-
-          try {
-            const testUrl = 'https://mc57rkjak5.re.qweatherapi.com/v7/weather/now?location=116.4074,39.9042';
-            const r = await Promise.race([
-              fetch(testUrl, { headers: { 'Authorization': `Bearer ${debugJwt}` } })
-                .then(async res => { const body = await res.text(); return { status: res.status, body: body.slice(0, 200) }; }),
-              new Promise<never>((_, rej) => setTimeout(() => rej(new Error('超时')), 3000)),
-            ]);
-            qwItems.push({ key: 'QWeather 鉴权', value: r.status === 200 ? '✅ 成功' : `❌ HTTP ${r.status}` });
-            qwItems.push({ key: 'QWeather 测试详情', value: r });
-          } catch (e) { qwItems.push({ key: 'QWeather 鉴权', value: `❌ ${(e as Error).message}` }); }
-
-          const cachedGeo = localStorage.getItem(`geo_${coordKey}`);
-          if (cachedGeo) {
-            qwItems.push({ key: 'GeoAPI LocationID', value: cachedGeo });
-            qwItems.push({ key: 'GeoAPI 说明', value: '来自缓存' });
-          } else {
-            try {
-              const id = await getLocationId(lat, lng, debugJwt);
-              qwItems.push({ key: 'GeoAPI LocationID', value: id });
-            } catch (e) { qwItems.push({ key: 'GeoAPI 错误', value: (e as Error).message }); }
-          }
-        }
-      } else {
-        wcItems.push(
-          { key: '当前天气', children: [
-            { key: '数据来源', value: '从主界面缓存读取' },
-            { key: '原始数据', value: rawWeatherNow.current },
-          ]},
-          { key: '7天预报', children: [
-            { key: '数据来源', value: '从主界面缓存读取' },
-            { key: '原始数据', value: rawWeatherFc.current },
-          ]},
-          { key: '昨日天气', children: [
-            { key: '数据来源', value: '从主界面缓存读取' },
-            { key: '查询日期', value: ydStr },
-            { key: '原始数据', value: Object.assign({}, rawYesterday.current, { 查询日期: ydStr }) },
-          ]},
-        );
-        const cachedGeo = localStorage.getItem(`geo_${coordKey}`);
-        if (cachedGeo) qwItems.push({ key: 'GeoAPI LocationID', value: cachedGeo });
-      }
-
-      // ── Section 4: 其他数据源 ──
-      otherItems.push({ key: '极数本源 jiShu', value: rawJiShu.current || '尚未拉取' });
-      otherItems.push({ key: 'MSN 中国版', value: rawMsn.current || '尚未拉取' });
-      otherItems.push({ key: 'UApiPro', value: rawUApi.current || '尚未拉取' });
-      otherItems.push({ key: '接口盒子 apiHezi', value: rawApiHezi.current || '尚未拉取' });
-      otherItems.push({ key: '行政区划代码 xzqhdm', value: rawXzqhdm.current || '尚未查询' });
-      otherItems.push({ key: 'CMA 预警 adcode', value: rawCmaAdcode.current || '尚未查询（qydm 需为区县级代码）' });
-      otherItems.push({ key: '气象预警 CMA', value: rawCmaAlarms.current.length > 0 ? rawCmaAlarms.current : '当前无预警' });
-
-      sections.push({ title: '其他数据源', icon: '📡', expanded: false, items: otherItems });
-
+      // 数据组装见 buildDebugSections（发请求 / 读缓存 / 拼一级目录）
+      const sections = await buildDebugSections({
+        lat: position.lat, lng: position.lng,
+        apiEnabled, address,
+        rawWeatherNow, rawWeatherFc, rawYesterday, rawYesterdayDate,
+        rawJiShu, rawMsn, rawUApi, rawApiHezi, rawXzqhdm,
+        rawCmaAdcode, rawCmaAlarms,
+      });
       setDebugSections(sections);
-      setDebugExpanded(new Set([0, 1]));
+      // 默认全部展开：和风天气「昨日」返回值与天地图状态需要直接可见
+      setDebugExpanded(new Set(sections.map((_, i) => i)));
     } catch (e) {
       setDebugError({ 错误: (e as Error).message, stack: (e as Error).stack });
     } finally {
       setDebugLoading(false);
     }
-  }, [position]);
+  }, [position, apiEnabled, address]);
 
 
   // 天气首次获取（无数据时立即拉取实况 + 预报）
@@ -1625,17 +1232,7 @@ function App() {
     // 自动拉一次数据；刷新仅由下拉刷新 / 位置变更 / 定时刷新负责。
   }, []);
 
-  const accuracyLevel = (acc?: number) => {
-    if (acc === undefined || acc === null || isNaN(acc)) {
-      return { label: '', level: '' };
-    }
-    if (acc <= 5) return { label: '极佳', level: 'excellent' };
-    if (acc <= 15) return { label: '良好', level: 'good' };
-    if (acc <= 50) return { label: '一般', level: 'fair' };
-    if (acc <= 150) return { label: '较差', level: 'poor' };
-    return { label: '很差', level: 'very-poor' };
-  };
-
+  // GPS 精度分级与天气背景主题见 lib/weatherTheme.ts
   const accInfo = accuracyLevel(position?.accuracy);
   const hasRealAcc = position?.accuracy !== undefined && position?.accuracy !== null && !isNaN(position!.accuracy);
   const accValue = hasRealAcc ? position!.accuracy! : 0;
@@ -1650,48 +1247,6 @@ function App() {
     const night = isNightOverride !== undefined ? isNightOverride : isNightTime();
     return getWeatherIconUrlSimple(phrase, night);
   };
-
-  
-  // 根据天气状况 + 白天/夜间切换背景
-  // 返回 { background, textScheme }：textScheme = 'light' | 'dark' 决定字体颜色
-  const getWeatherTheme = useCallback(() => {
-    const isNight = isNightTime();
-    // light = 亮色字体（暗背景），dark = 深色字体（亮背景）
-    type Theme = { background: string; scheme: 'light' | 'dark' };
-
-    // 默认背景（无天气数据时按时间显示）
-    if (!weatherCurrent) {
-      return isNight
-        ? ({ background: 'linear-gradient(180deg, #0f172a 0%, #1e293b 50%, #374151 100%)', scheme: 'light' } as Theme)
-        : ({ background: 'linear-gradient(180deg, #60a5fa 0%, #93c5fd 50%, #bfdbfe 100%)', scheme: 'dark' } as Theme);
-    }
-    const p = (weatherCurrent.phrase || '').toLowerCase();
-
-    if (p.includes('雨') || p.includes('雪') || p.includes('冰') || p.includes('雹')) {
-      return isNight
-        ? { background: 'linear-gradient(180deg, #0f172a 0%, #1e293b 50%, #334155 100%)', scheme: 'light' }
-        : { background: 'linear-gradient(180deg, #64748b 0%, #94a3b8 50%, #cbd5e1 100%)', scheme: 'dark' };
-    }
-    if (p.includes('雷') || p.includes('电')) {
-      return isNight
-        ? { background: 'linear-gradient(180deg, #020617 0%, #1e1b4b 50%, #312e81 100%)', scheme: 'light' }
-        : { background: 'linear-gradient(180deg, #374151 0%, #4b5563 50%, #6b7280 100%)', scheme: 'light' };
-    }
-    if (p.includes('雾') || p.includes('霾')) {
-      return isNight
-        ? { background: 'linear-gradient(180deg, #0f172a 0%, #1e293b 50%, #475569 100%)', scheme: 'light' }
-        : { background: 'linear-gradient(180deg, #9ca3af 0%, #d1d5db 50%, #e5e7eb 100%)', scheme: 'dark' };
-    }
-    if (p.includes('晴') || p.includes('sun') || p.includes('sunny')) {
-      return isNight
-        ? { background: 'linear-gradient(180deg, #0c1445 0%, #1e3a5f 50%, #2d5a87 100%)', scheme: 'light' }
-        : { background: 'linear-gradient(180deg, #38bdf8 0%, #7dd3fc 50%, #bae6fd 100%)', scheme: 'dark' };
-    }
-    // 默认
-    return isNight
-      ? { background: 'linear-gradient(180deg, #0f172a 0%, #1e293b 50%, #374151 100%)', scheme: 'light' }
-      : { background: 'linear-gradient(180deg, #60a5fa 0%, #93c5fd 50%, #bfdbfe 100%)', scheme: 'dark' };
-  }, []);
 
   // 天地图 city + county + town 组合
   const getGeocodeText = useCallback(() => {
@@ -1843,10 +1398,11 @@ function App() {
   );
 
   // ===== 主页面：天气 =====
+  const theme = weatherTheme(weatherCurrent);
   return (
     <div className="weather-page" ref={weatherPageRef}
-        style={{ ...(getWeatherTheme() ? { background: getWeatherTheme().background as string } : {}), touchAction: 'none' }}
-        data-scheme={getWeatherTheme()?.scheme || 'light'}
+        style={{ background: theme.background, touchAction: 'none' }}
+        data-scheme={theme.scheme || 'light'}
         onTouchStart={debugOpen || apiPanelOpen ? undefined : handleTouchStart}
         onTouchMove={debugOpen || apiPanelOpen ? undefined : handleTouchMove}
         onTouchEnd={debugOpen || apiPanelOpen ? undefined : handleTouchEnd}>
@@ -1873,7 +1429,7 @@ function App() {
           onMouseDown={onPullDebugStart}
           onMouseMove={onPullDebugMove}
           onMouseUp={onPullDebugEnd}>
-          <span>进度: 0% | 角度: 0° | 旋转: 0°</span><br/>
+          <span>下落: 0px | A 增长 | 进度: 0% | 弧: 0° | α: 0.40 | 旋转: 0°</span>
           <span style={{ fontSize: '0.7rem', opacity: 0.85, color: '#fca5a5' }}>
             未触发
           </span>
@@ -1886,7 +1442,6 @@ function App() {
         gearMenuOpen={gearMenuOpen}
         debugOpen={debugOpen}
         showPullDebug={showPullDebug}
-        layoutCompact={layoutCompact}
         forecast24Style={forecast24Style}
         realtimeSource={realtimeSource}
         apiEnabled={apiEnabled}
@@ -1897,7 +1452,6 @@ function App() {
         onDebugToggle={() => { setDebugOpen(!debugOpen); if (!debugOpen) fetchDebugData(); }}
         onPullDebugToggle={() => setShowPullDebug(!showPullDebug)}
         onApiPanelOpen={() => setApiPanelOpen(true)}
-        onLayoutCompactChange={setLayoutCompactCache}
         onForecast24StyleChange={setForecast24StyleCache}
         onRealtimeSourceChange={setRealtimeSourceCache}
         onSource24Change={setSource24Cache}
@@ -1920,9 +1474,8 @@ function App() {
               <span>{weatherError}</span>
             </div>
           )}
-          <div className={`weather-content${layoutCompact ? ' compact' : ' loose'}`}>
+          <div className="weather-content">
             <WeatherRealtime
-              ref={cardRealtimeRef}
               current={weatherCurrent}
               todayMax={Math.round(weatherDays[0]?.calendarDayTemperatureMax || weatherCurrent.temperature)}
               todayMin={Math.round(weatherDays[0]?.calendarDayTemperatureMin || 0)}
@@ -1944,110 +1497,28 @@ function App() {
               yesterday={weatherYesterday}
               is24Disabled={!apiEnabled[source24]}
               is15Disabled={!apiEnabled[source15]}
-              cardForecastRef={cardForecastRef}
-              card15dayRef={card15dayRef}
             />
           </div>
-          <div className="scroll-placeholder" ref={scrollPlaceholderRef} />
         </div>
       )}
       </div>
       {renderSidebar()}
 
       {debugOpen && (
-        <>
-          <div className="debug-panel-overlay active" onClick={() => setDebugOpen(false)} />
-          <div className="debug-panel open">
-            <div className="debug-panel-header">
-              <span className="debug-panel-title">🔧 调试 · API 原始数据</span>
-              <button className="debug-panel-close" onClick={() => setDebugOpen(false)}>✕</button>
-            </div>
-            <div className="debug-panel-body">
-              {debugLoading ? (
-                <div className="debug-loading">
-                  <span className="debug-loading-text">正在获取 API 数据…</span>
-                </div>
-              ) : debugSections ? (
-                <div className="debug-sections">
-                  {(debugSections as DebugSection[]).map((section, si) => {
-                    const isOpen = (debugExpanded as Set<number>).has(si);
-                    return (
-                      <div key={si} className="debug-section">
-                        <div className="debug-section-header" onClick={() => {
-                          const next = new Set(debugExpanded as Set<number>);
-                          if (next.has(si)) next.delete(si); else next.add(si);
-                          setDebugExpanded(next);
-                        }}>
-                          <span className="debug-section-arrow">{isOpen ? '▾' : '▸'}</span>
-                          <span className="debug-section-icon">{section.icon}</span>
-                          <span className="debug-section-title">{section.title}</span>
-                          <span className="debug-section-count">({section.items.length})</span>
-                        </div>
-                        {isOpen && (
-                          <div className="debug-items">
-                            {section.items.map((item, ii) => (
-                              <div key={ii} className="debug-json-block">
-                                {item.children ? (
-                                  <>
-                                    <div className="debug-json-key">
-                                      <span>{item.key}</span>
-                                      <button className="debug-copy-btn" onClick={() => copyToClipboard(item.key, item.children)}>
-                                        {copiedKey === item.key ? '✓ 已复制' : '📋 复制'}
-                                      </button>
-                                    </div>
-                                    <div className="debug-children">
-                                      {item.children.map((c, ci) => (
-                                        <div key={ci} className="debug-json-block debug-child-block">
-                                          <div className="debug-json-key">
-                                            <span>{c.key}</span>
-                                            <button className="debug-copy-btn" onClick={() => copyToClipboard(c.key, c.value)}>
-                                              {copiedKey === c.key ? '✓ 已复制' : '📋 复制'}
-                                            </button>
-                                          </div>
-                                          <pre className="debug-json-value">{JSON.stringify(c.value, null, 2)}</pre>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </>
-                                ) : (
-                                  <>
-                                    <div className="debug-json-key">
-                                      <span>{item.key}</span>
-                                      <button className="debug-copy-btn" onClick={() => copyToClipboard(item.key, item.value)}>
-                                        {copiedKey === item.key ? '✓ 已复制' : '📋 复制'}
-                                      </button>
-                                    </div>
-                                    <pre className="debug-json-value">{JSON.stringify(item.value, null, 2)}</pre>
-                                  </>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : debugError ? (
-                <div className="debug-json-blocks">
-                  {Object.entries(debugError).map(([key, value]) => (
-                    <div key={key} className="debug-json-block">
-                      <div className="debug-json-key">
-                        <span>{key}</span>
-                        <button className="debug-copy-btn" onClick={() => copyToClipboard(key, value)}>📋 复制</button>
-                      </div>
-                      <pre className="debug-json-value">{JSON.stringify(value, null, 2)}</pre>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="debug-empty">
-                  <span className="debug-empty-text">暂无调试数据</span>
-                </div>
-              )}
-            </div>
-          </div>
-        </>
+        <DebugPanel
+          loading={debugLoading}
+          sections={debugSections}
+          expanded={debugExpanded}
+          error={debugError}
+          copiedKey={copiedKey}
+          onCopy={copyToClipboard}
+          onToggle={(i) => {
+            const next = new Set(debugExpanded);
+            if (next.has(i)) next.delete(i); else next.add(i);
+            setDebugExpanded(next);
+          }}
+          onClose={() => setDebugOpen(false)}
+        />
       )}
       {apiPanelOpen && (
         <>
@@ -2069,11 +1540,6 @@ function App() {
                     <span className="api-panel-item-cadence">
                       {key === 'cma' ? `🕐 自动 ${cmaIntervalMin} 分钟` : meta.cadence}
                     </span>
-                    {key === 'cma' && (
-                      <button className="api-panel-item-interval" onClick={() => cycleCmaInterval()}>
-                        🔁 更新间隔：{cmaIntervalMin} 分钟（点击切换 {CMA_INTERVAL_OPTIONS.join(' / ')}）
-                      </button>
-                    )}
                     <span className="api-panel-item-time">上次请求: {apiRequestTimes[key] || '暂无'}</span>
                   </div>
                   <button

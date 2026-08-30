@@ -127,13 +127,15 @@ function updateLoader(
   // -------- 2) 圆圈位置：ease-out（先快后慢），到 100% 停止下降 -------------
   // 圆圈直径 48px：起点在页面顶部之上 48px（完全隐藏），随下拉落入视野
   const LOADER_OFFSET = -48;
+  // 圆环相对初始隐藏位（top = LOADER_OFFSET）的下落高度，调试面板显示的就是它
+  let descend = 0;
   if (progress <= 0) {
     loader.style.top = `${LOADER_OFFSET}px`;
     loader.style.opacity = '0';
   } else {
     const dp = Math.min(progress, P_CLOSE);
-    const top = LOADER_OFFSET + (1 - Math.pow(1 - dp, 2)) * MAX_DESCEND;
-    loader.style.top = `${top}px`;
+    descend = (1 - Math.pow(1 - dp, 2)) * MAX_DESCEND;
+    loader.style.top = `${LOADER_OFFSET + descend}px`;
     loader.style.opacity = '1';
   }
 
@@ -199,9 +201,15 @@ function updateLoader(
     if (progress >= P_CLOSE) phase = 'B2 半圈';
     else if (progress >= P_READY) phase = 'B1 加深';
 
+    // 圆环「实际」下落高度：读渲染结果而非按 progress 反推。
+    // 反推值在 CSS 覆盖内联 top 时会与真实位置脱钩（历史 bug：
+    // .pull-loader.refreshing 的 top !important 使面板显示 100px 而圆环停在 70px）。
+    // 仅调试模式测量，常态下拉路径不付这次强制重排。
+    const fall = Math.round(loader.getBoundingClientRect().top - LOADER_OFFSET);
+
     if (debugEl.children[0]) {
       (debugEl.children[0] as HTMLElement).textContent =
-        `进度: ${Math.round(progress * 100)}% | ${phase} | 弧: ${Math.round(spanDeg)}° | α: ${alpha.toFixed(2)} | 旋转: ${Math.round(rot)}°`;
+        `下落: ${fall}px | ${phase} | 进度: ${Math.round(progress * 100)}% | 弧: ${Math.round(spanDeg)}° | α: ${alpha.toFixed(2)} | 旋转: ${Math.round(rot)}°`;
     }
     if (debugEl.children[1]) {
       const child = debugEl.children[1] as HTMLElement;
@@ -256,6 +264,16 @@ export function refreshCompleteAnimation(
     else { updateLoader(0, dom, showDebug); onComplete?.(); }
   }
   requestAnimationFrame(step);
+}
+
+/**
+ * 刷新开始：把加载器钉在 100% 位置（top = LOADER_OFFSET + MAX_DESCEND）。
+ * 下拉路径触发时 handleTouchEnd 已调过 updateLoader(P_CLOSE)，此函数覆盖
+ * F5 键盘等「无下拉直接刷新」的场景——位置不能靠 CSS 硬编码补，
+ * 否则圆环会在刷新开始的瞬间跳一下。
+ */
+export function holdLoaderAtReady(dom: LoaderDOM, showDebug: boolean): void {
+  updateLoader(P_CLOSE, dom, showDebug);
 }
 
 // ---------------------------------------------------------------------------
@@ -325,9 +343,9 @@ export function usePullRefresh({
       }
     });
   }
-  // 下拉进度浮动调试元素的位置 & 拖动起点
-  const debugPos = useRef({ x: 16, y: 60 });
-  const debugDragStart = useRef<DragStart>({ x: 0, y: 0 });
+  // 拖动抓取偏移：触点相对浮窗左上角的像素差。移动时按该偏移换算位置，
+  // 浮窗跟着手指走而不是跳到手指下方
+  const debugDragOffset = useRef<DragStart>({ x: 0, y: 0 });
 
   // 惯性：记录触摸 Y 速度样本（末尾 6 个 {y, t}，t 为 1/60 秒单位）
   const velocitySamples = useRef<{ y: number; t: number }[]>([]);
@@ -514,8 +532,10 @@ export function usePullRefresh({
     const el = domRef.current?.debugEl;
     if (!el) return;
     const ct = 'touches' in e ? e.touches[0] : e;
-    debugDragStart.current = { x: ct.clientX, y: ct.clientY };
-    debugPos.current = { x: el.offsetLeft, y: el.offsetTop };
+    // fixed 元素的 offsetParent 为 null，offsetLeft/offsetTop 不可靠；
+    // 用 getBoundingClientRect 取视口坐标
+    const r = el.getBoundingClientRect();
+    debugDragOffset.current = { x: ct.clientX - r.left, y: ct.clientY - r.top };
   }, [domRef]);
 
   const onPullDebugMove = useCallback((e: DragEvent) => {
@@ -523,13 +543,10 @@ export function usePullRefresh({
     const el = domRef.current?.debugEl;
     if (!el) return;
     const ct = 'touches' in e ? e.touches[0] : e;
-    const dx = ct.clientX - debugDragStart.current.x;
-    const dy = ct.clientY - debugDragStart.current.y;
-    const newX = Math.max(0, debugPos.current.x + dx);
-    const newY = Math.max(0, debugPos.current.y + dy);
-    debugPos.current = { x: newX, y: newY };
-    el.style.left = `${newX}px`;
-    el.style.top = `${newY}px`;
+    const x = Math.max(0, ct.clientX - debugDragOffset.current.x);
+    const y = Math.max(0, ct.clientY - debugDragOffset.current.y);
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
   }, [domRef]);
 
   const onPullDebugEnd = useCallback((e: DragEvent) => {

@@ -1,4 +1,3 @@
-import { RefObject } from 'react';
 import type { ForecastSource } from '../../api/unifiedWeather';
 import type { JiShuData, UApiResponse } from '../../types/weather';
 import type { Forecast24Style } from './hooks/Forecast24Hour';
@@ -20,8 +19,6 @@ export interface WeatherDetailProps {
   yesterday: { date: string; dayOfWeek: string; tempMax: number; tempMin: number; textDay: string; windDir: string; windScale: string; windSpeed: string; humidity: number } | null;
   is24Disabled?: boolean;
   is15Disabled?: boolean;
-  cardForecastRef?: RefObject<HTMLDivElement | null>;
-  card15dayRef?: RefObject<HTMLDivElement | null>;
 }
 
 export function WeatherDetail({
@@ -37,12 +34,10 @@ export function WeatherDetail({
   yesterday,
   is24Disabled = false,
   is15Disabled = false,
-  cardForecastRef,
-  card15dayRef,
 }: WeatherDetailProps) {
   return (
     <>
-      <div className="card-forecast" ref={cardForecastRef}>
+      <div className="card-forecast">
         <Forecast24Hour
           jishuData={jishuData}
           uapiData={uapiData}
@@ -54,7 +49,7 @@ export function WeatherDetail({
           isDisabled={is24Disabled}
         />
       </div>
-      <div className="card-15day" ref={card15dayRef}>
+      <div className="card-15day">
         <Forecast15Day
           jishuData={jishuData}
           uapiData={uapiData}

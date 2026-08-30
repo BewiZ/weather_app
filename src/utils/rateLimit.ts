@@ -12,6 +12,7 @@
 //   api_hezi:           :00 :05 :10 :15 :20 :25 :30 :35 :40 :45 :50 :55 (every 5 min)
 //   uapi:               00:00 01:00 02:00 ... (every 1 hour)
 //   qweather:           00:00 12:00 (every 12 hours)
+//   tianditu:           :00 :05 :10 ... :55 (every 5 min, + 位移 200m 门槛在 App.tsx)
 //
 // Manual refresh has sliding-window quotas and min-interval rules.
 // ============================================================
@@ -78,6 +79,14 @@ const CONFIG: Record<string, RateLimitConfig> = {
     manualWindowMs: 12 * 60 * 60 * 1000,
     manualMinIntervalMs: 60 * 60 * 1000,
     dailyMax: 20,
+  },
+  // 天地图逆地理编码：最少 5 分钟一次（另需在 App.tsx 判断位移是否超过 200m）
+  tianditu: {
+    autoIntervalMs: 5 * 60 * 1000,
+    manualMaxInWindow: INFINITY,
+    manualWindowMs: INFINITY,
+    manualMinIntervalMs: 5 * 60 * 1000,
+    dailyMax: INFINITY,
   },
 };
 

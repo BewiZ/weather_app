@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Forecast24Style } from '../../WeatherDetail/hooks/Forecast24Hour';
 import type { ForecastSource } from '../../../api/unifiedWeather';
+import { REALTIME_SOURCES } from '../../../config/apiConfig';
 
 type SubMenu = 'main' | 'style' | 'source';
 
@@ -8,7 +9,6 @@ export interface SettingsMenuProps {
   gearMenuOpen: boolean;
   debugOpen: boolean;
   showPullDebug: boolean;
-  layoutCompact: boolean;
   forecast24Style: Forecast24Style;
   realtimeSource: string;
   apiEnabled: Record<string, boolean>;
@@ -19,19 +19,13 @@ export interface SettingsMenuProps {
   onDebugToggle: () => void;
   onPullDebugToggle: () => void;
   onApiPanelOpen: () => void;
-  onLayoutCompactChange: (val: boolean) => void;
   onForecast24StyleChange: (s: Forecast24Style) => void;
   onRealtimeSourceChange: (s: string) => void;
   onSource24Change: (s: ForecastSource) => void;
   onSource15Change: (s: ForecastSource) => void;
 }
 
-// 各分类可选来源
-const REALTIME_SOURCES: { key: string; label: string }[] = [
-  { key: 'weather_com', label: 'weather.com' },
-  { key: 'jishu',       label: '极数本源' },
-  { key: 'msn',         label: 'MSN 中国版' },
-];
+// 各分类可选来源（实况来源定义见 config/apiConfig.ts）
 const FORECAST_SOURCES: { key: ForecastSource; label: string }[] = [
   { key: 'jishu', label: '极数本源' },
   { key: 'uapi',  label: 'UApiPro' },
@@ -41,7 +35,6 @@ export function SettingsMenu({
   gearMenuOpen,
   debugOpen,
   showPullDebug,
-  layoutCompact,
   forecast24Style,
   realtimeSource,
   apiEnabled,
@@ -52,7 +45,6 @@ export function SettingsMenu({
   onDebugToggle,
   onPullDebugToggle,
   onApiPanelOpen,
-  onLayoutCompactChange,
   onForecast24StyleChange,
   onRealtimeSourceChange,
   onSource24Change,
@@ -140,10 +132,6 @@ export function SettingsMenu({
               <div className="gear-dropdown-back" onClick={() => setSubMenu('main')}>
                 <span className="gear-dropdown-back-arrow">‹</span>
                 <span className="gear-dropdown-back-text">样式</span>
-              </div>
-              <div className="gear-dropdown-item" onClick={() => onLayoutCompactChange(!layoutCompact)}>
-                <span className="gear-dropdown-text">结构</span>
-                <span className="gear-dropdown-setting">{layoutCompact ? '紧凑' : '松散'}</span>
               </div>
               <div className="gear-dropdown-item" onClick={() => onForecast24StyleChange(forecast24Style === 'complex' ? 'simple' : 'complex')}>
                 <span className="gear-dropdown-text">24小时预报样式</span>

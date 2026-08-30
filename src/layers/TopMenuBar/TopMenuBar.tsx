@@ -9,7 +9,6 @@ export interface TopMenuBarProps {
   gearMenuOpen: boolean;
   debugOpen: boolean;
   showPullDebug: boolean;
-  layoutCompact: boolean;
   forecast24Style: Forecast24Style;
   realtimeSource: string;
   apiEnabled: Record<string, boolean>;
@@ -20,7 +19,6 @@ export interface TopMenuBarProps {
   onDebugToggle: () => void;
   onPullDebugToggle: () => void;
   onApiPanelOpen: () => void;
-  onLayoutCompactChange: (val: boolean) => void;
   onForecast24StyleChange: (s: Forecast24Style) => void;
   onRealtimeSourceChange: (s: string) => void;
   onSource24Change: (s: ForecastSource) => void;
@@ -34,7 +32,6 @@ export function TopMenuBar({
   gearMenuOpen,
   debugOpen,
   showPullDebug,
-  layoutCompact,
   forecast24Style,
   realtimeSource,
   apiEnabled,
@@ -45,7 +42,6 @@ export function TopMenuBar({
   onDebugToggle,
   onPullDebugToggle,
   onApiPanelOpen,
-  onLayoutCompactChange,
   onForecast24StyleChange,
   onRealtimeSourceChange,
   onSource24Change,
@@ -61,7 +57,6 @@ export function TopMenuBar({
         gearMenuOpen={gearMenuOpen}
         debugOpen={debugOpen}
         showPullDebug={showPullDebug}
-        layoutCompact={layoutCompact}
         forecast24Style={forecast24Style}
         realtimeSource={realtimeSource}
         apiEnabled={apiEnabled}
@@ -72,7 +67,6 @@ export function TopMenuBar({
         onDebugToggle={onDebugToggle}
         onPullDebugToggle={onPullDebugToggle}
         onApiPanelOpen={onApiPanelOpen}
-        onLayoutCompactChange={onLayoutCompactChange}
         onForecast24StyleChange={onForecast24StyleChange}
         onRealtimeSourceChange={onRealtimeSourceChange}
         onSource24Change={onSource24Change}
